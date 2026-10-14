@@ -1,0 +1,17 @@
+# Logs
+logs/
+*.log
+
+# Dependencies & Build
+node_modules/
+dist/
+target/
+
+# Editor & OS
+.vscode/*
+!.vscode/extensions.json
+!.vscode/tasks.json
+.idea/
+.DS_Store
+*.suo
+*.user

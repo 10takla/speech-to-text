@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "overlay-window",
+  "platforms": ["windows", "linux", "macOS"],
+  "description": "Allows the overlay webview to show and hide its window and restore its position",
+  "windows": ["overlay"],
+  "permissions": [
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-position"
+  ]
+}

@@ -1,0 +1,72 @@
+html:has(body.bubble-window), body.bubble-window {
+  height: auto;
+  min-height: 0;
+  background: #12141a !important;
+}
+.bubble-root {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: "controls" "preview";
+  column-gap: 4px;
+  row-gap: 4px;
+  align-items: end;
+  align-content: start;
+  width: 100%;
+  height: max-content;
+  min-height: 0;
+  padding: 4px 8px;
+  color: var(--text-main);
+  .overlay-stage, .overlay-content { display: contents; }
+  .overlay-content { border: 0; border-radius: 0; }
+  .overlay-content-hidden .overlay-content { display: none; }
+  .overlay-header, .status-indicator { display: contents; }
+  .indicator-dot, .overlay-title { display: none; }
+  .overlay-body { display: contents; }
+  .overlay-stage.editing .overlay-body { padding: 0; }
+  .transcription-preview {
+    grid-area: preview;
+    min-width: 0;
+    min-height: 0;
+    max-height: none;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    text-align: left;
+    align-self: center;
+  }
+  .fragment-editors { grid-area: preview; min-width: 0; text-align: left; align-self: center; }
+  .fragment-editor-flow { display: block; width: 100%; text-align: left; overflow-wrap: anywhere; }
+}
+.bubble-controls {
+  grid-area: controls; display: flex; align-items: center; justify-content: flex-end; gap: 4px; height: 32px;
+  .waveform { position: static; transform: none; width: auto; height: 12px; }
+}
+.bubble-root {
+  align-items: center;
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  background: var(--bg-dark);
+  padding: 8px;
+  .transcription-preview, .fragment-editors { align-self: start; }
+}
+.bubble-action {
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #f8fafc;
+  cursor: pointer;
+  svg { width: 20px; height: 20px; fill: currentColor; }
+  &:first-of-type { color: #f87171; }
+  &:active { background: rgba(255, 255, 255, .1); }
+  &:disabled { opacity: .4; }
+}
+
+.bubble-root[data-state='idle'] {
+  grid-template-columns: auto;
+  grid-template-areas: "controls";
+  gap: 0;
+}

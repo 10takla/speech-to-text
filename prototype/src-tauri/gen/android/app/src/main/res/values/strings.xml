@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">"speech-to-text"</string>
+    <string name="main_activity_title">"speech-to-text"</string>
+</resources>
