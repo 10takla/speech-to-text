@@ -14,13 +14,6 @@ export default function ControlPanelApp() {
   
   return (
 <div id="control-panel-app">
-      {/* Лаконичная шапка */}
-      <header className="cp-header">
-        <div className="header-left">
-          <span className="status-pill">В трее</span>
-        </div>
-      </header>
-
       <main className="cp-main">
         <div className="cp-workspace-column">
         <div className="cp-column cp-settings-column">
