@@ -19,6 +19,7 @@ interface LiveTranscriptionDependencies {
   cutAudio(buffer: AudioBuffer, ranges: TimeRange[]): Blob;
   onPreview(text: string): void;
   onError(error: unknown): void;
+  onProcessing?(status: 'running' | 'success' | 'error' | 'idle'): void;
 }
 
 export interface LiveTranscriber {
@@ -51,6 +52,7 @@ export function createLiveTranscriber(dependencies: LiveTranscriptionDependencie
   let transcriptText = '';
   let transcriptSegments: TranscriptSegment[] = [];
   let retryAfter = 0;
+  let processing = false;
 
   function settings() {
     const current = dependencies.getSettings();
@@ -90,6 +92,8 @@ export function createLiveTranscriber(dependencies: LiveTranscriptionDependencie
       timer = null;
     }
     generation++;
+    if (processing) dependencies.onProcessing?.('idle');
+    processing = false;
     abortController?.abort();
     abortController = null;
     requestPending = false;
@@ -123,6 +127,8 @@ export function createLiveTranscriber(dependencies: LiveTranscriptionDependencie
       const audioBlob = dependencies.cutAudio(buffer, [{ start: chunkStartSeconds, end: chunkEndSeconds }]);
       const overlapSeconds = settings().overlapSeconds;
       const overlap = Math.max(0, chunkStartSeconds ? overlapSeconds : 0);
+      processing = true;
+      dependencies.onProcessing?.('running');
       const result = fitTranscriptToAudio(await dependencies.provider.transcribe(audioBlob, controller.signal), chunkEndSeconds - chunkStartSeconds);
       if (activeGeneration !== generation || dependencies.getState() !== 'recording') return;
 
@@ -143,14 +149,20 @@ export function createLiveTranscriber(dependencies: LiveTranscriptionDependencie
       committedThroughSeconds = Math.max(committedThroughSeconds, chunkEndSeconds);
       hasSpeech = lastSpeechElapsed > sessionElapsedAtRequest - Math.max(0, buffer.duration - chunkEndSeconds);
       retryAfter = 0;
+      processing = false;
+      dependencies.onProcessing?.('success');
     } catch (error) {
       const isAbort = error instanceof Error && error.name === 'AbortError';
       if (activeGeneration === generation && !isAbort) {
+        processing = false;
+        dependencies.onProcessing?.('error');
         dependencies.onError(error);
         retryAfter = performance.now() + 3000;
       }
     } finally {
       if (activeGeneration === generation) {
+        if (processing) dependencies.onProcessing?.('idle');
+        processing = false;
         requestPending = false;
         if (abortController === controller) abortController = null;
       }

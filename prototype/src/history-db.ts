@@ -15,6 +15,8 @@ export interface HistoryStep {
   title: string;
   status: HistoryStepStatus;
   errorMessage?: string;
+  text?: string;
+  audioBlob?: Blob;
 }
 
 export interface HistoryItem {
@@ -38,11 +40,19 @@ const DB_NAME = 'SpeechToTextDB';
 const DB_VERSION = 1;
 const STORE_NAME = 'history';
 
+let database: Promise<IDBDatabase> | undefined;
 function openDB(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  if (database) return database;
+  const connection = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      const invalidate = () => { if (database === connection) database = undefined; };
+      db.onversionchange = () => { invalidate(); db.close(); };
+      db.onclose = invalidate;
+      resolve(db);
+    };
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -50,6 +60,9 @@ function openDB(): Promise<IDBDatabase> {
       }
     };
   });
+  database = connection;
+  void connection.catch(() => { if (database === connection) database = undefined; });
+  return connection;
 }
 
 export async function addHistoryRecord(

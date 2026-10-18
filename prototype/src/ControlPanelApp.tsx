@@ -1,7 +1,11 @@
 import { useEffect } from 'react';
 import './control-panel.scss';
+import { observeHistoryColumns } from './history-columns';
+import { observeScenarioProgress } from './scenario-progress';
 
 export default function ControlPanelApp() {
+  useEffect(() => observeHistoryColumns(), []);
+  useEffect(() => observeScenarioProgress(document.getElementById('scenario-editor')!), []);
   useEffect(() => {
     void import('./control-panel-controller').then(() => {
       document.getElementById('startup-loading')?.remove();
@@ -18,31 +22,37 @@ export default function ControlPanelApp() {
         <div className="cp-workspace-column">
         <div className="cp-column cp-settings-column">
         {/* 1. Конфигурация */}
-        <section className="cp-card compact-actions">
+        <section className="cp-card">
+          <div className="cp-settings-content compact-actions">
           <h2>Конфигурация</h2>
           <div className="btn-group">
-            <button id="btn-export-settings" className="btn secondary">Экспорт</button>
-            <button id="btn-import-settings" className="btn secondary">Импорт</button>
+            <button id="btn-reset-settings" className="btn secondary">Сбросить настройки</button>
+            <button id="btn-settings-json" className="btn secondary" aria-expanded="false" aria-controls="settings-json-panel">Настройки (JSON)</button>
             <button id="btn-copy-logs" className="btn secondary">Скопировать логи</button>
           </div>
-          <div id="import-settings-panel" className="import-settings-panel" hidden>
-            <textarea id="input-import-settings" aria-label="Конфигурация JSON" placeholder="Вставьте конфигурацию JSON" />
+          <div id="settings-json-panel" className="settings-json-panel" hidden>
+            <textarea id="input-settings-json" aria-label="Конфигурация JSON" aria-describedby="settings-json-status" spellCheck={false} />
             <div className="btn-group">
-              <button id="btn-apply-import" className="btn primary">Применить</button>
-              <button id="btn-cancel-import" className="btn secondary">Отмена</button>
+              <button id="btn-copy-settings-json" className="btn secondary">Скопировать</button>
+              <button id="btn-apply-settings-json" className="btn primary">Применить</button>
+              <button id="btn-cancel-settings-json" className="btn secondary">Отмена</button>
             </div>
-            <p id="import-settings-status" role="status" aria-live="polite" />
+            <p id="settings-json-status" role="status" aria-live="polite" />
+          </div>
           </div>
         </section>
 
         <section className="cp-card" id="startup-settings">
+          <div className="cp-settings-content">
           <h2>Запуск приложения</h2>
-          <div className="form-field"><label htmlFor="startup-mode">При запуске ОС:</label><select id="startup-mode"><option value="">Не выбрано</option><option value="window">Открывать окно</option><option value="hidden-taskbar">Скрытое окно в панели задач</option><option value="tray">Скрытое окно в трее</option></select></div>
+          <div className="form-field"><label htmlFor="startup-mode">При входе в Windows:</label><select id="startup-mode"><option value="">Не запускать</option><option value="window">Открывать окно</option><option value="hidden-taskbar">Свёрнутым в панели задач</option><option value="tray">Скрытым в трее</option></select></div>
           <p id="startup-status" role="status" aria-live="polite" />
+          </div>
         </section>
 
         {/* 5. Оверлей */}
         <section className="cp-card">
+          <div className="cp-settings-content">
           <h2>Оверлей</h2>
           <div className="overlay-width-row">
             <label htmlFor="overlay-max-width-percent">Макс. ширина:</label>
@@ -52,7 +62,7 @@ export default function ControlPanelApp() {
               <span className="unit-label">%</span>
             </div>
           </div>
-          <div className="form-grid inline-grid">
+          <div className="btn-group">
             <button id="btn-reset-pos" className="btn secondary compact-btn">Сброс позиции</button>
           </div>
           <div className="checkbox-row">
@@ -60,13 +70,14 @@ export default function ControlPanelApp() {
               <input type="checkbox" id="toggle-overlay-monitor-movement" /> Перемещать оверлей за курсором между мониторами
             </label>
           </div>
+          </div>
         </section>
 
         </div>
 
         <div className="cp-column cp-scenario-column">
         <section className="cp-card">
-          <h2>Сценарий обработки</h2>
+          <h2>Сценарии обработки</h2>
           <div id="scenario-editor" />
         </section>
 
@@ -112,9 +123,9 @@ export default function ControlPanelApp() {
               <div className="form-field">
                 <label htmlFor="groq-language">Язык:</label>
                 <select id="groq-language">
+                  <option value="auto">Авто</option>
                   <option value="ru">Русский (ru)</option>
                   <option value="en">English (en)</option>
-                  <option value="auto">Авто</option>
                 </select>
               </div>
             </div>
@@ -185,9 +196,7 @@ export default function ControlPanelApp() {
                 <label htmlFor="gemini-model">Модель: <span className="req-marker" title="Обязательная настройка">*</span></label>
                 <div className="model-picker">
                   <select id="gemini-model">
-                    <option value="gemini-1.5-flash">gemini-1.5-flash (быстрая)</option>
-                    <option value="gemini-1.5-pro">gemini-1.5-pro (мощная)</option>
-                    <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp</option>
+                    <option value="">Загрузите модели из API</option>
                   </select>
                   <button id="refresh-gemini-models" className="btn secondary model-refresh-btn" type="button" title="Обновить список моделей Gemini" aria-label="Обновить список моделей Gemini">↻</button>
                 </div>

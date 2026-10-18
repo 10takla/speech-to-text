@@ -1,4 +1,10 @@
 import type { AppSettings } from './config';
+import { createScenarioList, updateScenarioResetButtons, updateScenarioTriggerWarnings } from './scenario-list';
+import { renderDuplicateWarnings } from './scenario-duplicate-warnings';
+import { scenarioTriggerProblem } from './scenario-triggers';
+import { createBrowserScenarioPreview } from './browser-scenario-preview';
+import { disposeScenarioColumns } from './scenario-column-layout';
+import { mountSpeechProvider } from './speech-settings-editor';
 import { checkMicrophone, listMicrophones, type Microphone } from './microphones';
 import { errorMessage } from './error-message';
 import { isAndroid } from './android-runtime';
@@ -15,13 +21,20 @@ import {
   type ScenarioStepType,
 } from './scenario';
 
-const stepChoices: readonly ScenarioStepType[] = ['startRecording', 'transcribe', 'postprocess', 'copy', 'paste'];
+const stepChoices: readonly ScenarioStepType[] = ['startRecording', 'transcribe', 'postprocess', 'copy', 'paste', 'speak'];
 
 export function mountScenarioEditor(
   root: HTMLElement,
   settings: AppSettings,
-  onChange: () => void,
+  persistChanges: () => void,
 ): () => void {
+  const onChange = () => {
+    if (isAndroid && !settings.scenarios.some(scenario => scenario.id === settings.androidScenarioId)) {
+      settings.androidScenarioId = settings.scenarios[0]?.id ?? '';
+    }
+    persistChanges();
+    updateScenarioResetButtons(root, settings.scenarios);
+  };
   const transcriptionPanel = document.getElementById('provider-select')?.closest('.cp-card') as HTMLElement | null;
   const postprocessingPanel = document.getElementById('post-process-provider')?.closest('.cp-card') as HTMLElement | null;
   const providerStatuses = {
@@ -35,8 +48,18 @@ export function mountScenarioEditor(
   transcriptionPanel?.remove();
   postprocessingPanel?.remove();
 
-  let editingScenarioId: string | null = null;
+  const renderList = createScenarioList();
   const openStepSettings = new Set<string>();
+  const renderedLayouts = new Map<string, string>();
+  const scenarioLayout = (steps: Scenario['steps']): string => {
+    const groups = new Map<string, number>();
+    return JSON.stringify(steps.map(step => {
+      if (step.parallelGroup && !groups.has(step.parallelGroup)) groups.set(step.parallelGroup, groups.size);
+      return [step.id, step.type, step.enabled, step.parallelGroup ? groups.get(step.parallelGroup) : null,
+        step.parallelBranches?.map(scenarioLayout)];
+    }));
+  };
+  let scrollRestoreFrame: number | undefined;
   let microphones: Microphone[] = [];
   let microphoneListError = '';
   let microphoneLoading = true;
@@ -65,6 +88,7 @@ export function mountScenarioEditor(
   const updateReadinessIndicators = () => {
     root.querySelectorAll<HTMLElement>('.scenario-step-readiness').forEach(indicator => {
       const stepType = indicator.dataset.stepType;
+      if (!stepType) return;
       const providerStatus = stepType === 'transcribe' ? providerStatuses.transcribe : providerStatuses.postprocess;
       const isReady = providerStatus?.classList.contains('status-pill--ready') ?? false;
       indicator.textContent = providerStatus?.textContent?.trim() || 'Не готов';
@@ -84,170 +108,118 @@ export function mountScenarioEditor(
     render();
   };
 
-  const getActiveScenario = (): Scenario =>
-    settings.scenarios.find(scenario => scenario.id === settings.activeScenarioId) ?? settings.scenarios[0];
+  const updateDuplicateWarnings = (scenarioId?: string) => renderDuplicateWarnings(root, settings.scenarios, stepSettingsFromAppSettings(settings), !isAndroid, scenarioId);
+  const scheduleDuplicateWarnings = (event: Event) => {
+    const scenarioId = (event.target as Element).closest<HTMLElement>('.scenario-card')?.dataset.scenarioId;
+    queueMicrotask(() => updateDuplicateWarnings(scenarioId));
+  };
+  root.addEventListener('input', scheduleDuplicateWarnings);
+  root.addEventListener('change', scheduleDuplicateWarnings);
 
-  const render = () => {
+  const render = (changedScenarioId?: string) => {
+    if (scrollRestoreFrame !== undefined) cancelAnimationFrame(scrollRestoreFrame);
+    const scrollByScenario = new Map([...root.querySelectorAll<HTMLElement>('.scenario-card')].map(card => {
+      const body = card.querySelector<HTMLElement>('.scenario-card-body');
+      return [card.dataset.scenarioId, { left: body?.scrollLeft ?? 0, top: body?.scrollTop ?? 0 }] as const;
+    }));
+    const outerScroll: { element: HTMLElement; left: number; top: number }[] = [];
+    for (let element: HTMLElement | null = root; element; element = element.parentElement) {
+      outerScroll.push({ element, left: element.scrollLeft, top: element.scrollTop });
+    }
+    const restoreScroll = () => {
+      root.querySelectorAll<HTMLElement>('.scenario-card').forEach(card => {
+        const position = scrollByScenario.get(card.dataset.scenarioId);
+        const body = card.querySelector<HTMLElement>('.scenario-card-body');
+        if (position && body) { body.scrollLeft = position.left; body.scrollTop = position.top; }
+      });
+      // A newly created scenario intentionally focuses its name for editing.
+      if (root.querySelector('input[aria-label="Название сценария"]:not([hidden])')) return;
+      outerScroll.forEach(({ element, left, top }) => { element.scrollLeft = left; element.scrollTop = top; });
+    };
     root.querySelectorAll<HTMLDetailsElement>('.scenario-step-details[data-scenario-step-id]').forEach(details => {
       const stepId = details.dataset.scenarioStepId;
       if (!stepId) return;
       if (details.open) openStepSettings.add(stepId);
       else openStepSettings.delete(stepId);
     });
-    root.replaceChildren();
-    const scenario = getActiveScenario();
-    if (!scenario) return;
-    const restoreStepDetails = (details: HTMLDetailsElement, stepId: string) => {
-      details.dataset.scenarioStepId = stepId;
-      details.open = openStepSettings.has(stepId);
-    };
-    const appendStepSettings = (row: HTMLElement, details: HTMLDetailsElement,
-      summary: HTMLElement, content: HTMLElement) => {
-      details.hidden = !Array.from(content.children).some(child => !child.hasAttribute('hidden'));
-      if (details.hidden) return;
-      details.append(summary, content);
-      row.append(details);
-    };
-
-    const isEditingName = editingScenarioId === scenario.id;
-
-    const toolbar = document.createElement('div');
-    toolbar.className = 'scenario-toolbar';
-
-    const pickerWrapper = document.createElement('div');
-    pickerWrapper.className = 'scenario-picker-wrapper';
-
-    const picker = document.createElement('select');
-    picker.className = 'scenario-picker-select';
-    picker.setAttribute('aria-label', 'Активный сценарий');
-    for (const item of settings.scenarios) {
-      const option = document.createElement('option');
-      option.value = item.id;
-      option.textContent = item.name || 'Без названия';
-      option.selected = item.id === settings.activeScenarioId;
-      picker.append(option);
+    const retainedCards = new Map<string, HTMLElement>();
+    root.querySelectorAll<HTMLElement>('.scenario-card').forEach(card => {
+      if (changedScenarioId && card.dataset.scenarioId !== changedScenarioId
+        && settings.scenarios.some(scenario => scenario.id === card.dataset.scenarioId)) {
+        retainedCards.set(card.dataset.scenarioId!, card);
+      } else disposeScenarioColumns(card);
+    });
+    for (const child of [...root.children]) {
+      if (!(child instanceof HTMLElement) || retainedCards.get(child.dataset.scenarioId ?? '') !== child) child.remove();
     }
-    picker.addEventListener('change', () => {
-      settings.activeScenarioId = picker.value;
-      save();
+    renderGlobalControls();
+    renderList(root, settings, (scenario, inline, restored) => {
+      settings.activeScenarioId = scenario?.id ?? '';
+      onChange();
+      if (inline) { updateScenarioTriggerWarnings(root, settings); updateDuplicateWarnings(); }
+      else if (restored && scenario) refreshRestoredScenario(scenario);
+      else render(scenario?.id);
+    }, renderScenario, retainedCards);
+    updateReadinessIndicators();
+    restoreScroll();
+    updateDuplicateWarnings(changedScenarioId);
+    // Column positions are measured in the same frame after their new DOM is attached.
+    scrollRestoreFrame = requestAnimationFrame(() => { scrollRestoreFrame = undefined; restoreScroll(); });
+  };
+
+  const refreshRestoredScenario = (scenario: Scenario) => {
+    const card = [...root.querySelectorAll<HTMLDetailsElement>('.scenario-card')]
+      .find(item => item.dataset.scenarioId === scenario.id);
+    const body = card?.querySelector<HTMLElement>('.scenario-card-body');
+    if (!body) { render(scenario.id); return; }
+    const previousDetails = new Map([...body.querySelectorAll<HTMLDetailsElement>('.scenario-step-details')]
+      .map(details => [details.dataset.scenarioStepId, details]));
+    previousDetails.forEach((details, id) => {
+      if (id) { if (details.open) openStepSettings.add(id); else openStepSettings.delete(id); }
     });
-
-    const nameInput = document.createElement('input');
-    nameInput.type = 'text';
-    nameInput.className = 'scenario-picker-input';
-    nameInput.maxLength = 64;
-    nameInput.value = scenario.name;
-    nameInput.style.display = isEditingName ? 'block' : 'none';
-    picker.style.display = isEditingName ? 'none' : '';
-    const nameError = document.createElement('span');
-    nameError.className = 'scenario-name-error';
-    nameError.setAttribute('role', 'alert');
-    nameError.textContent = 'Сценарий с таким названием уже существует.';
-    nameError.hidden = true;
-
-    nameInput.addEventListener('input', () => {
-      nameError.hidden = true;
-      nameInput.removeAttribute('aria-invalid');
+    const settingsOnly = renderedLayouts.get(scenario.id) === scenarioLayout(scenario.steps);
+    const replacement = document.createElement('div');
+    renderScenario(replacement, scenario);
+    replacement.querySelectorAll<HTMLDetailsElement>('.scenario-step-details').forEach(details => {
+      const previous = previousDetails.get(details.dataset.scenarioStepId);
+      if (!previous) return;
+      previous.replaceChildren(...details.childNodes);
+      if (!settingsOnly) details.replaceWith(previous);
     });
-
-    const finishRename = () => {
-      if (editingScenarioId !== scenario.id) return;
-      const trimmed = nameInput.value.trim();
-      if (trimmed && hasScenarioName(settings.scenarios, trimmed, scenario.id)) {
-        nameError.hidden = false;
-        nameInput.setAttribute('aria-invalid', 'true');
-        nameInput.focus();
-        return;
-      }
-      if (trimmed) scenario.name = trimmed;
-      editingScenarioId = null;
-      save();
-    };
-
-    nameInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        finishRename();
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        editingScenarioId = null;
-        render();
-      }
-    });
-    nameInput.addEventListener('blur', finishRename);
-
-    const editBtn = document.createElement('button');
-    editBtn.type = 'button';
-    editBtn.className = 'btn-icon scenario-rename-btn';
-    editBtn.title = 'Переименовать сценарий';
-    editBtn.innerHTML = scenarioIcon('edit');
-    if (isEditingName) {
-      editBtn.innerHTML = scenarioIcon('check');
-      editBtn.title = 'Сохранить название';
+    if (settingsOnly) {
+      body.querySelector('.scenario-validation')?.replaceWith(replacement.querySelector('.scenario-validation')!);
+      disposeScenarioColumns(replacement);
+    } else {
+      disposeScenarioColumns(body);
+      body.replaceChildren(...replacement.childNodes);
     }
-    editBtn.addEventListener('click', () => {
-      if (!isEditingName) {
-        editingScenarioId = scenario.id;
-        picker.style.display = 'none';
-        nameInput.style.display = 'block';
-        nameInput.value = scenario.name;
-        nameInput.focus();
-        nameInput.select();
-        editBtn.innerHTML = scenarioIcon('check');
-        editBtn.title = 'Сохранить название';
-      } else {
-        finishRename();
+    card!.open = true;
+    updateScenarioTriggerWarnings(root, settings);
+    updateReadinessIndicators();
+    updateDuplicateWarnings(scenario.id);
+  };
+
+  const renderGlobalControls = () => {
+    if (isAndroid) {
+      const label = document.createElement('label');
+      label.className = 'scenario-overlay-selector';
+      label.textContent = 'Сценарий';
+      const select = document.createElement('select');
+      select.setAttribute('aria-label', 'Сценарий для оверлея');
+      for (const scenario of settings.scenarios) {
+        select.add(new Option(scenario.name, scenario.id));
       }
-    });
-
-    pickerWrapper.append(picker, nameInput, editBtn, nameError);
-    toolbar.append(pickerWrapper);
-
-    toolbar.append(button('Новый', 'Создать сценарий', () => {
-      const created: Scenario = {
-        id: crypto.randomUUID(),
-        name: getUniqueScenarioName('Новый сценарий', settings.scenarios),
-        steps: [],
-      };
-      settings.scenarios.push(created);
-      settings.activeScenarioId = created.id;
-      editingScenarioId = created.id;
-      save();
-    }, false, scenarioIcon('plus')));
-    toolbar.append(button('Копировать', 'Создать копию сценария', () => {
-      const copy: Scenario = {
-        id: crypto.randomUUID(),
-        name: getUniqueScenarioName(`${scenario.name} — копия`, settings.scenarios),
-        steps: scenario.steps.map(step => ({
-          ...step,
-          id: crypto.randomUUID(),
-          transcription: step.transcription ? { ...step.transcription } : undefined,
-          postprocessing: step.postprocessing ? {
-            ...step.postprocessing,
-            generationConfig: step.postprocessing.generationConfig ? { ...step.postprocessing.generationConfig } : undefined,
-          } : undefined,
-        })),
-      };
-      settings.scenarios.push(copy);
-      settings.activeScenarioId = copy.id;
-      save();
-    }, false, scenarioIcon('copy')));
-    toolbar.append(button('Удалить', 'Удалить сценарий', () => {
-      if (settings.scenarios.length < 2) return;
-      if (!window.confirm(`Удалить сценарий «${scenario.name}»?`)) return;
-      const deletedIndex = settings.scenarios.findIndex(item => item.id === scenario.id);
-      settings.scenarios.splice(deletedIndex, 1);
-      const selectedIndex = Math.min(deletedIndex, settings.scenarios.length - 1);
-      settings.activeScenarioId = settings.scenarios[selectedIndex].id;
-      if (editingScenarioId === scenario.id) editingScenarioId = null;
-      save();
-    }, settings.scenarios.length < 2, scenarioIcon('delete')));
-    root.append(toolbar);
-    if (isEditingName) {
-      nameInput.focus();
-      nameInput.select();
+      if (!settings.scenarios.length) select.add(new Option('Нет сценариев', ''));
+      select.value = settings.androidScenarioId;
+      select.disabled = !settings.scenarios.length;
+      select.addEventListener('change', () => {
+        settings.androidScenarioId = select.value;
+        onChange();
+      });
+      label.append(select);
+      root.prepend(label);
+      return;
     }
-
     const scenarioControls = document.createElement('div');
     scenarioControls.className = 'scenario-global-controls';
     const cancelHotkeyLabel = document.createElement('label');
@@ -278,7 +250,27 @@ export function mountScenarioEditor(
     });
     cancelHotkeyLabel.append(cancelHotkeyInput);
     scenarioControls.append(cancelHotkeyLabel);
-    root.append(scenarioControls);
+    root.prepend(scenarioControls);
+
+  };
+
+  const renderScenario = (root: HTMLElement, scenario: Scenario) => {
+    const save = () => {
+      settings.activeScenarioId = scenario.id;
+      onChange();
+      render(scenario.id);
+    };
+    const restoreStepDetails = (details: HTMLDetailsElement, stepId: string) => {
+      details.dataset.scenarioStepId = stepId;
+      details.open = openStepSettings.has(stepId);
+    };
+    const appendStepSettings = (row: HTMLElement, details: HTMLDetailsElement,
+      summary: HTMLElement, content: HTMLElement) => {
+      details.hidden = !Array.from(content.children).some(child => !child.hasAttribute('hidden'));
+      if (details.hidden) return;
+      details.append(summary, content);
+      row.append(details);
+    };
 
     const problem = validateScenario(scenario);
     const status = document.createElement('p');
@@ -329,6 +321,7 @@ export function mountScenarioEditor(
       row.append(typeSelect);
 
       if (step.type === 'startRecording') {
+        const triggerProblem = isAndroid ? null : scenarioTriggerProblem(settings.scenarios, { ...scenario, enabled: true }, settings.hotkeyCancel);
         const details = document.createElement('details');
         details.className = 'scenario-step-details';
         restoreStepDetails(details, step.id);
@@ -405,7 +398,7 @@ export function mountScenarioEditor(
         soundEnabledInput.addEventListener('change', () => {
           step.soundEnabled = soundEnabledInput.checked;
           soundOptions.hidden = !soundEnabledInput.checked;
-          root.querySelectorAll<HTMLElement>('.scenario-paste-sound-options').forEach(option => {
+          content.closest('.scenario-card-body')?.querySelectorAll<HTMLElement>('.scenario-paste-sound-options').forEach(option => {
             option.hidden = !soundEnabledInput.checked;
           });
           onChange();
@@ -416,15 +409,38 @@ export function mountScenarioEditor(
         triggerOptions.className = 'scenario-trigger-options';
         const hotkeyLabel = document.createElement('label');
         hotkeyLabel.textContent = 'Старт записи';
+        hotkeyLabel.className = 'form-field--important';
+        hotkeyLabel.classList.toggle('is-invalid', !isAndroid && !!triggerProblem);
+        if (!isAndroid) {
+          const caption = document.createElement('span');
+          caption.textContent = 'Старт записи';
+          const required = document.createElement('span');
+          required.className = 'req-marker'; required.textContent = '*'; required.setAttribute('aria-hidden', 'true');
+          caption.append(required);
+          hotkeyLabel.replaceChildren(caption);
+          const triggerStatus = document.createElement('span');
+          triggerStatus.id = `trigger-status-${step.id}`;
+          triggerStatus.className = `scenario-trigger-status status-pill status-pill--${triggerProblem ? 'error' : 'ready'}`;
+          triggerStatus.textContent = triggerProblem ? step.hotkey?.trim() ? 'Триггер недоступен' : 'Не задан старт записи' : 'Триггер задан';
+          triggerStatus.title = triggerProblem || 'Клавиша начала записи задана без конфликтов';
+          triggerStatus.setAttribute('role', 'status');
+          summary.append(triggerStatus);
+        }
         const hotkeyInput = document.createElement('input');
         hotkeyInput.type = 'text';
         hotkeyInput.readOnly = true;
-        hotkeyInput.value = formatHotkey(step.hotkey ?? 'Control+Digit1');
+        hotkeyInput.value = formatHotkey(step.hotkey ?? '');
+        if (!isAndroid) {
+          hotkeyInput.setAttribute('aria-required', 'true');
+          hotkeyInput.setAttribute('aria-invalid', String(!!triggerProblem));
+          hotkeyInput.setAttribute('aria-describedby', `trigger-status-${step.id}`);
+        }
         hotkeyInput.placeholder = 'Нажмите сочетание';
         hotkeyInput.title = 'Нажмите, затем введите сочетание клавиш';
         hotkeyInput.addEventListener('focus', () => { hotkeyInput.value = 'Нажмите сочетание…'; });
-        hotkeyInput.addEventListener('blur', () => { hotkeyInput.value = formatHotkey(step.hotkey ?? 'Control+Digit1'); });
+        hotkeyInput.addEventListener('blur', () => { hotkeyInput.value = formatHotkey(step.hotkey ?? ''); });
         hotkeyInput.addEventListener('keydown', event => {
+          if (event.key === 'Tab') return;
           event.preventDefault();
           event.stopPropagation();
           if (['Control', 'Shift', 'Alt', 'Meta'].includes(event.key)) return;
@@ -432,8 +448,9 @@ export function mountScenarioEditor(
           if (event.ctrlKey) parts.push('Control');
           if (event.altKey) parts.push('Alt');
           if (event.shiftKey) parts.push('Shift');
+          if (event.metaKey) parts.push('Meta');
           parts.push(event.code || event.key);
-          step.hotkey = parts.join('+');
+          step.hotkey = ['Backspace', 'Delete'].includes(event.key) ? '' : parts.join('+');
           save();
         });
         hotkeyLabel.append(hotkeyInput);
@@ -563,6 +580,16 @@ export function mountScenarioEditor(
         soundOptions.append(soundLabel);
         content.append(soundOptions);
         appendStepSettings(row, details, summary, content);
+      } else if (step.type === 'speak') {
+        const details = document.createElement('details');
+        details.className = 'scenario-step-details';
+        restoreStepDetails(details, step.id);
+        const summary = document.createElement('summary');
+        summary.textContent = 'Настройки';
+        const content = document.createElement('div');
+        content.className = 'scenario-step-settings';
+        mountSpeechProvider(content, step, save, onChange);
+        appendStepSettings(row, details, summary, content);
       } else if (step.type === 'transcribe' || step.type === 'postprocess') {
         const panel = step.type === 'transcribe' ? transcriptionPanel : postprocessingPanel;
         if (panel) {
@@ -573,16 +600,58 @@ export function mountScenarioEditor(
           summary.append(document.createTextNode('Настройки'));
           const readiness = document.createElement('span');
           readiness.className = 'scenario-step-readiness';
-          readiness.dataset.stepType = step.type;
+          if (settings.activeScenarioId === scenario.id) readiness.dataset.stepType = step.type;
+          else readiness.textContent = 'Не проверен';
           readiness.setAttribute('role', 'status');
           summary.append(readiness);
           const content = document.createElement('div');
           content.className = 'scenario-step-settings';
-          content.append(panel);
+          const focused = settings.activeScenarioId === scenario.id;
+          if (focused) content.append(panel);
+          else {
+            details.open = false;
+            const placeholder = document.createElement('span');
+            content.append(placeholder);
+            summary.addEventListener('click', event => {
+              event.preventDefault();
+              for (const sharedPanel of [transcriptionPanel, postprocessingPanel]) {
+                const previous = sharedPanel?.closest('details');
+                if (previous) previous.open = false;
+              }
+              details.open = true;
+              openStepSettings.add(step.id);
+              settings.activeScenarioId = scenario.id;
+              onChange();
+              render();
+            });
+          }
           appendStepSettings(row, details, summary, content);
         }
       }
 
+      if (step.type === 'copy' || step.type === 'paste') {
+        let details = row.querySelector<HTMLDetailsElement>('.scenario-step-details');
+        if (!details) {
+          details = document.createElement('details');
+          details.className = 'scenario-step-details';
+          restoreStepDetails(details, step.id);
+          const summary = document.createElement('summary');
+          summary.textContent = 'Настройки';
+          const content = document.createElement('div');
+          content.className = 'scenario-step-settings';
+          details.append(summary, content);
+          row.append(details);
+        }
+        const label = document.createElement('label');
+        label.className = 'checkbox-label';
+        const toggle = document.createElement('input');
+        toggle.type = 'checkbox';
+        toggle.dataset.showTextInOverlay = '';
+        toggle.checked = step.showTextInOverlay === true;
+        toggle.addEventListener('change', () => { step.showTextInOverlay = toggle.checked; save(); });
+        label.append(toggle, 'Показывать текст в оверлее');
+        details.querySelector('.scenario-step-settings')!.append(label);
+      }
       const actions = document.createElement('div');
       actions.className = 'scenario-step-actions';
       if (canDisableScenarioStep(step)) {
@@ -734,11 +803,17 @@ export function mountScenarioEditor(
       flow.append(hint);
     }
 
+    createBrowserScenarioPreview()(flow, scenario, save, openStepSettings, () => {
+      settings.activeScenarioId = scenario.id;
+      onChange();
+    });
+    renderedLayouts.set(scenario.id, scenarioLayout(scenario.steps));
     updateReadinessIndicators();
   };
 
   function moveStep(scenario: Scenario, from: number, to: number): void {
     if (to < 0 || to >= scenario.steps.length) return;
+    settings.activeScenarioId = scenario.id;
     const [step] = scenario.steps.splice(from, 1);
     scenario.steps.splice(to, 0, step);
     save();
@@ -783,25 +858,6 @@ function getCompatibleTypes(scenario: Scenario, index: number): ScenarioStepType
   );
 }
 
-function normalizeScenarioName(name: string): string {
-  return name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('ru');
-}
-
-function hasScenarioName(scenarios: Scenario[], name: string, excludeId?: string): boolean {
-  const normalized = normalizeScenarioName(name);
-  return scenarios.some(scenario =>
-    scenario.id !== excludeId && normalizeScenarioName(scenario.name) === normalized,
-  );
-}
-
-function getUniqueScenarioName(baseName: string, scenarios: Scenario[]): string {
-  if (!hasScenarioName(scenarios, baseName)) return baseName;
-  for (let number = 2; ; number += 1) {
-    const candidate = `${baseName} ${number}`;
-    if (!hasScenarioName(scenarios, candidate)) return candidate;
-  }
-}
-
 function formatHotkey(value: string): string {
   return value.split('+').map(part => {
     if (part === 'Control') return 'Ctrl';
@@ -825,13 +881,3 @@ function button(label: string, description: string, onClick: () => void, disable
   return element;
 }
 
-function scenarioIcon(name: 'edit' | 'check' | 'plus' | 'copy' | 'delete'): string {
-  const paths: Record<typeof name, string> = {
-    edit: '<path d="m16 5 3 3M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10L4 20Z"/>',
-    check: '<path d="m5 12 4 4L19 6"/>',
-    plus: '<path d="M12 5v14M5 12h14"/>',
-    copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
-    delete: '<path d="M3 6h18M8 6V4h8v2m2 0-.8 14H6.8L6 6m4 4v7m4-7v7"/>',
-  };
-  return `<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
-}

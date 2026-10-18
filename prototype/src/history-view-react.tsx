@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { indexedDbHistoryRepository } from './history-repository';
 import type { HistoryRepository } from './ports';
 import { HistoryTranscript } from './history-transcript';
+import { HistorySpeech } from './history-speech';
 import type { HistoryItem } from './history-db';
 
 export interface HistoryView {
@@ -31,7 +32,7 @@ export function createHistoryView(
       ])) : 'empty';
       if (lastRenderedSignature === signature) return;
       lastRenderedSignature = signature;
-      root.render(<HistoryList key={generation} records={records} />);
+      root.render(<HistoryList records={records} />);
     } catch (error) {
       console.warn('Ошибка загрузки истории из IndexedDB:', error);
     }
@@ -96,8 +97,10 @@ const statusLabels = {
   pending: 'Не выполнен', running: 'Выполняется', success: 'Выполнен', error: 'Ошибка', skipped: 'Отключён',
 };
 
-function HistoryRecord({ record }: { record: HistoryItem }) {
-  const transcriptStep = record.steps?.map(step => step.type).lastIndexOf('transcribe') ?? -1;
+export function HistoryRecord({ record }: { record: HistoryItem }) {
+  const transcriptStep = record.steps?.findIndex(step => step.type === 'transcribe') ?? -1;
+  const lastTextStep = record.steps?.findLastIndex(step =>
+    (step.type === 'postprocess' || step.type === 'transcribe') && step.status === 'success') ?? -1;
   const legacyError = !record.steps?.length && record.errorMessage ? (
     <div className="history-step history-step--error">
       <span className="history-step-title">{record.errorStep || 'Ошибка сценария'}</span>
@@ -120,7 +123,13 @@ function HistoryRecord({ record }: { record: HistoryItem }) {
             <span className="history-step-title">{step.title}</span>
             <span className="history-step-status">{statusLabels[step.status]}</span>
             {step.errorMessage && <div className="history-step-error">{step.errorMessage}</div>}
+            {step.type === 'speak' && !!step.audioBlob?.size &&
+              <HistorySpeech audio={step.audioBlob} />}
             {index === transcriptStep && <HistoryTranscript record={record} inStep />}
+            {(step.type === 'postprocess' || step.type === 'transcribe' && index !== transcriptStep) && step.status === 'success' &&
+              <div className="history-transcript history-step-transcript">
+                <div className="history-transcript-text">{step.text ?? (index === lastTextStep ? record.text : '')}</div>
+              </div>}
           </div>
         ))}
       </div>}

@@ -12,9 +12,12 @@ mod android_runtime;
 
 #[cfg(desktop)]
 pub use crate::commands::{
-    cancel_audio_recording, copy_text_to_clipboard, write_clipboard_text, get_app_logs, hide_overlay, is_overlay_dragging, open_microphone_settings,
+    save_recording_file,
+    piper_http,
+    synthesize_system_speech, system_speech_capabilities,
+    cancel_audio_recording, copy_text_to_clipboard, write_clipboard_text, get_app_logs, hide_overlay, set_overlay_pinned, is_overlay_dragging, open_microphone_settings,
     paste_text_into_active_window, pause_audio_recording, position_overlay_on_cursor_monitor,
-    resume_audio_recording, remember_overlay_position, resize_control_panel_to_content, resize_overlay_to_content, set_control_hotkeys, set_record_hotkey, show_overlay,
+    resume_audio_recording, remember_overlay_position, resize_control_panel_to_content, resize_overlay_to_content, set_control_hotkeys_active, set_control_hotkeys, set_record_hotkey, set_scenario_hotkeys, show_overlay,
     list_microphones, check_microphone, get_audio_input_level, start_audio_recording, start_overlay_dragging, stop_audio_recording, snapshot_audio_recording,
 };
 #[cfg(desktop)]
@@ -31,7 +34,7 @@ use tauri::{
 
 
 
-use crate::app_state::{ControlHotkeyState, PasteTargetState, RecordHotkeyState};
+use crate::app_state::{ControlHotkeyState, PasteTargetState, RecordHotkeyState, ScenarioHotkeyState};
 
 
 
@@ -49,6 +52,9 @@ pub fn run() {
         );
     } else {
         targets.push(crate::runtime_logs::target());
+        targets.push(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+            file_name: Some("app".to_string()),
+        }));
     }
     let log_plugin = tauri_plugin_log::Builder::default()
         .targets(targets)
@@ -58,6 +64,7 @@ pub fn run() {
         .plugin(log_plugin)
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(RecordHotkeyState::default())
+        .manage(ScenarioHotkeyState::default())
         .manage(ControlHotkeyState::default())
         .manage(PasteTargetState::default())
         .manage(audio_capture::AudioCaptureState::new())
@@ -72,7 +79,9 @@ pub fn run() {
 
                     let is_record = app.state::<RecordHotkeyState>().0.lock()
                         .map(|current| current.as_ref() == Some(shortcut)).unwrap_or(false);
-                    if is_record {
+                    let scenario_id = app.state::<ScenarioHotkeyState>().0.lock().ok()
+                        .and_then(|bindings| bindings.iter().find(|(key, _)| key == shortcut).map(|(_, id)| id.clone()));
+                    if is_record || scenario_id.is_some() {
                         #[cfg(windows)]
                         {
                             let foreground = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
@@ -94,13 +103,14 @@ pub fn run() {
                                 }
                             }
                         }
-                        let _ = app.emit_to("overlay", "record-hotkey", ());
+                        let _ = app.emit_to("overlay", "record-hotkey", scenario_id);
                         return;
                     }
 
                     let control = app.state::<ControlHotkeyState>();
                     let action = control.0.lock().ok().and_then(|hotkeys| {
-                        if hotkeys.0.as_ref() == Some(shortcut) { Some("pause-hotkey") }
+                        if !hotkeys.2 { None }
+                        else if hotkeys.0.as_ref() == Some(shortcut) { Some("pause-hotkey") }
                         else if hotkeys.1.as_ref() == Some(shortcut) { Some("cancel-hotkey") }
                         else { None }
                     });
@@ -111,10 +121,15 @@ pub fn run() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
+            save_recording_file,
+            piper_http,
+            synthesize_system_speech,
+            system_speech_capabilities,
             crate::startup::set_startup_settings,
             position_overlay_on_cursor_monitor,
             show_overlay,
             hide_overlay,
+            set_overlay_pinned,
             resize_overlay_to_content,
             resize_control_panel_to_content,
             start_overlay_dragging,
@@ -128,40 +143,31 @@ pub fn run() {
             cancel_audio_recording,
             pause_audio_recording,
             resume_audio_recording,
-            set_control_hotkeys,
+            set_control_hotkeys_active, set_control_hotkeys,
             set_record_hotkey,
+            set_scenario_hotkeys,
             copy_text_to_clipboard,
             write_clipboard_text,
             get_app_logs,
             paste_text_into_active_window
         ])
         .setup(|app| {
-            if let Err(error) = crate::startup::restore(app.handle()) {
-                log::warn!("Не удалось восстановить настройки запуска: {error}");
-                if let Some(window) = app.get_webview_window("main") { let _ = window.show(); }
+            #[cfg(windows)]
+            if let Err(error) = crate::commands::overlay_interaction::initialize(app.handle()) {
+                log::warn!("Не удалось включить закрепление оверлея: {error}");
             }
             use tauri_plugin_global_shortcut::GlobalShortcutExt;
-            let default_hotkey: tauri_plugin_global_shortcut::Shortcut = "Ctrl+1".parse::<tauri_plugin_global_shortcut::Shortcut>().map_err(|e| std::io::Error::other(e.to_string()))?;
+            let default_hotkey: tauri_plugin_global_shortcut::Shortcut = "Ctrl+Shift+D".parse::<tauri_plugin_global_shortcut::Shortcut>().map_err(|e| std::io::Error::other(e.to_string()))?;
             match app.global_shortcut().register(default_hotkey) {
                 Ok(()) => *app.state::<RecordHotkeyState>().0.lock().map_err(|e| e.to_string())? = Some(default_hotkey),
-                Err(error) => log::warn!("Не удалось зарегистрировать горячую клавишу по умолчанию Ctrl+1: {error}"),
+                Err(error) => log::warn!("Не удалось зарегистрировать горячую клавишу по умолчанию Ctrl+Shift+D: {error}"),
             }
-            let pause_hotkey: tauri_plugin_global_shortcut::Shortcut = "Ctrl+2".parse::<tauri_plugin_global_shortcut::Shortcut>().map_err(|e| std::io::Error::other(e.to_string()))?;
+            let pause_hotkey: tauri_plugin_global_shortcut::Shortcut = "Ctrl+Alt+D".parse::<tauri_plugin_global_shortcut::Shortcut>().map_err(|e| std::io::Error::other(e.to_string()))?;
             let cancel_hotkey: tauri_plugin_global_shortcut::Shortcut = "Escape".parse::<tauri_plugin_global_shortcut::Shortcut>().map_err(|e| std::io::Error::other(e.to_string()))?;
             let control_state = app.state::<ControlHotkeyState>();
             let mut control_keys = control_state.0.lock().map_err(|e| e.to_string())?;
             if control_keys.0.is_none() && control_keys.1.is_none() {
-            let pause_registered = app.global_shortcut().register(pause_hotkey);
-            let cancel_registered = app.global_shortcut().register(cancel_hotkey);
-            let pause_active = match pause_registered {
-                Ok(()) => Some(pause_hotkey),
-                Err(error) => { log::warn!("Не удалось зарегистрировать Ctrl+2: {error}"); None }
-            };
-            let cancel_active = match cancel_registered {
-                Ok(()) => Some(cancel_hotkey),
-                Err(error) => { log::warn!("Не удалось зарегистрировать Escape: {error}"); None }
-            };
-            *control_keys = (pause_active, cancel_active);
+                *control_keys = (Some(pause_hotkey), Some(cancel_hotkey), false);
             }
             drop(control_keys);
             // Создание системного трея (Tray Icon)
@@ -178,6 +184,7 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show_panel" => {
                         if let Some(main_win) = app.get_webview_window("main") {
+                            let _ = main_win.set_skip_taskbar(false);
                             let _ = main_win.unminimize();
                             let _ = main_win.show();
                             let _ = main_win.set_focus();
@@ -200,6 +207,7 @@ pub fn run() {
                     {
                         let app = tray.app_handle();
                         if let Some(main_win) = app.get_webview_window("main") {
+                            let _ = main_win.set_skip_taskbar(false);
                             let _ = main_win.unminimize();
                             let _ = main_win.show();
                             let _ = main_win.set_focus();
@@ -207,6 +215,11 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            log::info!("Значок системного трея создан");
+            if let Err(error) = crate::startup::restore(app.handle()) {
+                log::warn!("Не удалось восстановить настройки запуска: {error}");
+                if let Some(window) = app.get_webview_window("main") { let _ = window.show(); }
+            }
 
             // Перехват закрытия главной панели (минимизация/скрытие в трей вместо завершения процесса)
             if let Some(main_window) = app.get_webview_window("main") {

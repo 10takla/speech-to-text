@@ -3,11 +3,20 @@ import {
   combineFragments,
   mergeRanges,
   retainedRanges,
+  retainedPlaybackOffset,
   textAfterCuts,
   type RecordingFragment,
 } from './recording-editor';
 
 describe('recording range helpers', () => {
+  it('maps segment starts to edited audio without replaying removed ranges', () => {
+    const ranges = [{ start: 1, end: 3 }, { start: 5, end: 9 }];
+    expect(retainedPlaybackOffset(ranges, 1)).toBe(0);
+    expect(retainedPlaybackOffset(ranges, 5)).toBe(2);
+    expect(retainedPlaybackOffset(ranges, 7)).toBe(4);
+    expect(retainedPlaybackOffset(ranges, 4)).toBe(2);
+    expect(retainedPlaybackOffset([], 7)).toBe(0);
+  });
   it('clamps, sorts, and merges overlapping or adjacent removed ranges', () => {
     expect(mergeRanges([
       { start: 5, end: 8 },

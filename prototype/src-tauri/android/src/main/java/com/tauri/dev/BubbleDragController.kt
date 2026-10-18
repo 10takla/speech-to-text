@@ -87,7 +87,11 @@ class BubbleDragController(
                     dragging = false
                     val remove = event.actionMasked == MotionEvent.ACTION_UP && overTarget(event)
                     clearTarget()
-                    if (remove) dismiss()
+                    if (remove) {
+                        layout.x = originX
+                        layout.y = originY
+                        dismiss()
+                    }
                     else {
                         if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
                             layout.x = originX

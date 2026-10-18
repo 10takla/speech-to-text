@@ -1,5 +1,8 @@
 export type OverlayState = 'idle' | 'recording' | 'transcribing' | 'editing' | 'error';
 import { isAndroid, androidCall } from './android-runtime';
+import { refreshScenarioTriggerClaims } from './scenario-triggers';
+import { VOICE_TRANSCRIPTION_PROMPT, LEGACY_VOICE_TRANSCRIPTION_PROMPT, LEGACY_MULTILINGUAL_TRANSCRIPTION_PROMPT, LEGACY_VOICE_INPUT_CLEANUP_PROMPT, LEGACY_VOICE_ANSWER_PROMPT, VOICE_INPUT_CLEANUP_PROMPT, VOICE_ANSWER_PROMPT } from './scenario-prompts';
+import { walkScenarioSteps } from './scenario-tree';
 
 import {
   DEFAULT_GEMINI_API_KEY,
@@ -9,6 +12,7 @@ import {
 } from './defaults';
 import {
   createDefaultScenario,
+  createVoiceAnswerScenario,
   createStep,
   DEFAULT_SCENARIO_SOUND_SETTINGS,
   DEFAULT_SCENARIO_STEP_SETTINGS,
@@ -68,6 +72,7 @@ export interface AppSettings {
   // Сценарии обработки
   scenarios: import('./scenario').Scenario[];
   activeScenarioId: string;
+  androidScenarioId: string;
   scenarioVersion: number;
 }
 
@@ -101,11 +106,11 @@ export function normalizeSettings(value: unknown): AppSettings {
   const enumValue = <T extends string>(key: keyof AppSettings, values: readonly T[], fallback: T): T =>
     typeof source[key] === 'string' && values.includes(source[key] as T) ? source[key] as T : fallback;
 
-  const oldRecordHotkey = source.hotkeyRecord === 'Space' ? 'Control+Digit1' : stringValue('hotkeyRecord');
+  const oldRecordHotkey = source.hotkeyRecord === 'Space' ? 'Control+Shift+KeyD' : stringValue('hotkeyRecord');
   const oldPauseHotkey = source.hotkeyPause === 'KeyP' || source.hotkeyPause === 'F2'
-    ? 'Control+Digit2' : stringValue('hotkeyPause');
+    ? 'Control+Alt+KeyD' : stringValue('hotkeyPause');
   const oldResumeHotkey = source.hotkeyResume === 'KeyP' || source.hotkeyResume === 'F2'
-    ? 'Control+Digit2' : stringValue('hotkeyResume');
+    ? 'Control+Alt+KeyD' : stringValue('hotkeyResume');
   const rawScenarios = Array.isArray(source.scenarios) ? source.scenarios.filter(isRecord) : [];
   const requestedScenarioId = typeof source.activeScenarioId === 'string' ? source.activeScenarioId : '';
   const rawActiveScenario = rawScenarios.find(item => item.id === requestedScenarioId) ?? rawScenarios[0];
@@ -127,7 +132,7 @@ export function normalizeSettings(value: unknown): AppSettings {
     }
     : null;
 
-  const normalized: Omit<AppSettings, 'scenarios' | 'activeScenarioId' | 'scenarioVersion'> = {
+  const normalized: Omit<AppSettings, 'scenarios' | 'activeScenarioId' | 'androidScenarioId' | 'scenarioVersion'> = {
     startupMode: enumValue('startupMode', ['', 'window', 'hidden-taskbar', 'tray'],
       source.hideTaskbar === true ? 'tray' : defaults.startupMode),
     hotkeyRecord: oldRecordHotkey,
@@ -188,64 +193,121 @@ export function normalizeSettings(value: unknown): AppSettings {
   const storedScenarioVersion = typeof source.scenarioVersion === 'number' && Number.isFinite(source.scenarioVersion)
     ? source.scenarioVersion
     : 0;
+  if (storedScenarioVersion < 14) for (const scenario of scenarios) {
+    if (scenario.id === 'default-scenario' && ['По умолчанию', 'Стандартный сценарий'].includes(scenario.name)) scenario.name = 'Голосовой ввод';
+  }
   // Переносим прежнюю общую клавишу паузы в настройки шага записи.
   for (const scenario of scenarios) {
     const trigger = scenario.steps.find(step => step.type === 'startRecording');
     if (trigger && !trigger.hotkeyPause) trigger.hotkeyPause = normalized.hotkeyPause;
   }
   if (storedScenarioVersion < 3) {
-    const standardScenario = scenarios.find(scenario =>
+    const defaultScenario = scenarios.find(scenario =>
       scenario.id === 'default-scenario' || scenario.name === 'Стандартный сценарий',
     );
-    if (standardScenario && !standardScenario.steps.some(step => step.type === 'postprocess')) {
-      const deliveryIndex = standardScenario.steps.findIndex(step => step.type === 'copy' || step.type === 'paste');
-      if (deliveryIndex >= 0) standardScenario.steps.splice(deliveryIndex, 0, createStep('postprocess', normalized.hotkeyRecord, normalized.soundStart, stepSettings, soundSettings));
+    if (defaultScenario && !defaultScenario.steps.some(step => step.type === 'postprocess')) {
+      const deliveryIndex = defaultScenario.steps.findIndex(step => step.type === 'copy' || step.type === 'paste');
+      if (deliveryIndex >= 0) defaultScenario.steps.splice(deliveryIndex, 0, createStep('postprocess', normalized.hotkeyRecord, normalized.soundStart, stepSettings, soundSettings));
     }
   }
   if (storedScenarioVersion < 4) {
-    const standardScenario = scenarios.find(scenario =>
+    const defaultScenario = scenarios.find(scenario =>
       scenario.id === 'default-scenario' || scenario.name === 'Стандартный сценарий',
     );
-    if (standardScenario) {
-      const copyIndex = standardScenario.steps.findIndex(step => step.type === 'copy');
-      const pasteIndex = standardScenario.steps.findIndex(step => step.type === 'paste');
+    if (defaultScenario) {
+      const copyIndex = defaultScenario.steps.findIndex(step => step.type === 'copy');
+      const pasteIndex = defaultScenario.steps.findIndex(step => step.type === 'paste');
       if (copyIndex < 0 && pasteIndex >= 0) {
-        standardScenario.steps.splice(pasteIndex, 0, createStep('copy', normalized.hotkeyRecord, normalized.soundStart, stepSettings, soundSettings));
+        defaultScenario.steps.splice(pasteIndex, 0, createStep('copy', normalized.hotkeyRecord, normalized.soundStart, stepSettings, soundSettings));
       } else if (copyIndex >= 0 && pasteIndex < 0) {
-        standardScenario.steps.splice(copyIndex + 1, 0, createStep('paste', normalized.hotkeyRecord, normalized.soundStart, stepSettings, soundSettings));
+        defaultScenario.steps.splice(copyIndex + 1, 0, createStep('paste', normalized.hotkeyRecord, normalized.soundStart, stepSettings, soundSettings));
       }
     }
   }
   if (storedScenarioVersion < 7) {
-    const standardScenario = scenarios.find(scenario =>
+    const defaultScenario = scenarios.find(scenario =>
       scenario.id === 'default-scenario' || scenario.name === 'Стандартный сценарий',
     );
-    const postprocessStep = standardScenario?.steps.find(step => step.type === 'postprocess');
+    const postprocessStep = defaultScenario?.steps.find(step => step.type === 'postprocess');
     if (postprocessStep) {
       postprocessStep.enabled = false;
     }
   }
   if (storedScenarioVersion < 8) {
-    const standardScenario = scenarios.find(scenario =>
+    const defaultScenario = scenarios.find(scenario =>
       scenario.id === 'default-scenario' || scenario.name === 'Стандартный сценарий',
     );
-    const pasteStep = standardScenario?.steps.find(step => step.type === 'paste');
+    const pasteStep = defaultScenario?.steps.find(step => step.type === 'paste');
     if (pasteStep) pasteStep.enabled = true;
   }
   if (isAndroid && storedScenarioVersion < 10) {
-    const standardScenario = scenarios.find(scenario =>
+    const defaultScenario = scenarios.find(scenario =>
       scenario.id === 'default-scenario' || scenario.name === 'Стандартный сценарий',
     );
-    const pasteStep = standardScenario?.steps.find(step => step.type === 'paste');
+    const pasteStep = defaultScenario?.steps.find(step => step.type === 'paste');
     if (pasteStep) pasteStep.enabled = true;
+  }
+  if (storedScenarioVersion < 11) {
+    for (const scenario of scenarios) {
+      if (scenario.id !== 'default-scenario' && !scenario.name.startsWith('По умолчанию')) continue;
+      const copyIndex = scenario.steps.findIndex(step => step.type === 'copy');
+      const copy = scenario.steps[copyIndex];
+      const paste = scenario.steps[copyIndex + 1];
+      if (copy && paste?.type === 'paste' && !copy.parallelGroup && !paste.parallelGroup) {
+        copy.parallelGroup = paste.parallelGroup = 'default-delivery';
+      }
+    }
+  }
+  if (storedScenarioVersion < 12 && !scenarios.some(scenario => scenario.id === 'voice-answer-scenario' || scenario.name === 'Голосовой ответ')) {
+    scenarios.push(createVoiceAnswerScenario(stepSettings));
+  }
+  if (storedScenarioVersion < 13) {
+    const trigger = scenarios.find(scenario => scenario.id === 'voice-answer-scenario')?.steps.find(step => step.type === 'startRecording');
+    if (trigger && !trigger.hotkey?.trim()) trigger.hotkey = 'Control+Shift+KeyR';
+  }
+  if (storedScenarioVersion < 15) for (const scenario of scenarios) {
+    if (scenario.id !== 'default-scenario' && scenario.id !== 'voice-answer-scenario') continue;
+    const transcription = scenario.steps.find(step => step.type === 'transcribe')?.transcription;
+    if (transcription && !transcription.prompt.trim()) transcription.prompt = VOICE_TRANSCRIPTION_PROMPT;
+    const postprocessing = scenario.steps.find(step => step.type === 'postprocess')?.postprocessing;
+    if (postprocessing && (!postprocessing.prompt.trim() || scenario.id === 'voice-answer-scenario'
+      && postprocessing.prompt === 'Ответь на запрос пользователя кратко и по существу. Текст ответа будет прочитан вслух.')) {
+      postprocessing.prompt = scenario.id === 'default-scenario' ? VOICE_INPUT_CLEANUP_PROMPT : VOICE_ANSWER_PROMPT;
+    }
+  }
+  if (storedScenarioVersion < 16) for (const scenario of scenarios) {
+    for (const step of walkScenarioSteps(scenario.steps)) {
+      if (step.transcription?.prompt === LEGACY_VOICE_TRANSCRIPTION_PROMPT) step.transcription.prompt = VOICE_TRANSCRIPTION_PROMPT;
+    }
+  }
+  if (storedScenarioVersion < 17) for (const scenario of scenarios) {
+    for (const step of walkScenarioSteps(scenario.steps)) {
+      const transcription = step.transcription;
+      if (transcription && (transcription.prompt === LEGACY_VOICE_TRANSCRIPTION_PROMPT
+        || transcription.prompt === LEGACY_MULTILINGUAL_TRANSCRIPTION_PROMPT)) {
+        transcription.prompt = VOICE_TRANSCRIPTION_PROMPT;
+      }
+      const postprocessing = step.postprocessing;
+      if (postprocessing?.prompt === LEGACY_VOICE_INPUT_CLEANUP_PROMPT) postprocessing.prompt = VOICE_INPUT_CLEANUP_PROMPT;
+      if (postprocessing?.prompt === LEGACY_VOICE_ANSWER_PROMPT) postprocessing.prompt = VOICE_ANSWER_PROMPT;
+    }
   }
   const activeScenarioId = scenarios.some(scenario => scenario.id === requestedScenarioId)
     ? requestedScenarioId
-    : scenarios[0].id;
-  const activeScenario = scenarios.find(scenario => scenario.id === activeScenarioId)!;
-  const trigger = activeScenario.steps.find(step => step.type === 'startRecording');
-  const transcription = activeScenario.steps.find(step => step.type === 'transcribe')?.transcription;
-  const postprocessing = activeScenario.steps.find(step => step.type === 'postprocess')?.postprocessing;
+    : scenarios[0]?.id ?? '';
+  const androidScenarioId = scenarios.some(scenario => scenario.id === source.androidScenarioId)
+    ? source.androidScenarioId as string
+    : activeScenarioId;
+  // Older versions ran only the selected scenario. Preserve that behavior on migration.
+  for (const scenario of scenarios) {
+    const raw = rawScenarios.find(item => item.id === scenario.id);
+    if (raw && typeof raw.enabled !== 'boolean') scenario.enabled = scenario.id === activeScenarioId;
+  }
+  refreshScenarioTriggerClaims(scenarios);
+  const activeScenario = scenarios.find(scenario => scenario.id === activeScenarioId);
+  const trigger = activeScenario?.steps.find(step => step.type === 'startRecording');
+  const transcription = activeScenario?.steps.find(step => step.type === 'transcribe')?.transcription;
+  const postprocessing = activeScenario?.steps.find(step => step.type === 'postprocess')?.postprocessing;
   return {
     ...normalized,
     hotkeyRecord: trigger?.hotkey ?? normalized.hotkeyRecord,
@@ -254,7 +316,7 @@ export function normalizeSettings(value: unknown): AppSettings {
     soundStart: trigger?.sound ?? normalized.soundStart,
     soundEnabled: trigger?.soundEnabled ?? normalized.soundEnabled,
     soundProfile: trigger?.soundProfile ?? normalized.soundProfile,
-    soundSuccess: activeScenario.steps.find(step => step.type === 'paste')?.soundSuccess ?? normalized.soundSuccess,
+    soundSuccess: activeScenario?.steps.find(step => step.type === 'paste')?.soundSuccess ?? normalized.soundSuccess,
     provider: transcription?.provider ?? normalized.provider,
     groqApiKey: transcription?.apiKey ?? normalized.groqApiKey,
     groqModel: transcription?.model ?? normalized.groqModel,
@@ -270,12 +332,13 @@ export function normalizeSettings(value: unknown): AppSettings {
     geminiApiKey: postprocessing?.apiKey ?? normalized.geminiApiKey,
     geminiModel: postprocessing?.model ?? normalized.geminiModel,
     geminiPrompt: postprocessing?.prompt ?? normalized.geminiPrompt,
-    postProcessEnabled: activeScenario.steps.some(step => step.enabled && step.type === 'postprocess'),
-    autoCopyClipboard: activeScenario.steps.some(step => step.enabled && step.type === 'copy'),
-    autoPasteActiveWindow: activeScenario.steps.some(step => step.enabled && step.type === 'paste'),
+    postProcessEnabled: activeScenario?.steps.some(step => step.enabled && step.type === 'postprocess') ?? false,
+    autoCopyClipboard: activeScenario?.steps.some(step => step.enabled && step.type === 'copy') ?? false,
+    autoPasteActiveWindow: activeScenario?.steps.some(step => step.enabled && step.type === 'paste') ?? false,
     scenarios,
     activeScenarioId,
-    scenarioVersion: 10,
+    androidScenarioId,
+    scenarioVersion: 17,
   };
 }
 
@@ -284,19 +347,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function defaultSettings(): AppSettings {
-  const scenario = createDefaultScenario(false, 'paste', 'Control+Digit1', 'chime', DEFAULT_SCENARIO_STEP_SETTINGS, DEFAULT_SCENARIO_SOUND_SETTINGS, 'Control+Digit2');
+  const scenario = createDefaultScenario(false, 'paste', 'Control+Shift+KeyD', 'chime', DEFAULT_SCENARIO_STEP_SETTINGS, DEFAULT_SCENARIO_SOUND_SETTINGS, 'Control+Alt+KeyD');
   return {
-    hotkeyRecord: 'Control+Digit1',
+    hotkeyRecord: 'Control+Shift+KeyD',
     startupMode: '',
     hotkeyCancel: 'Escape',
-    hotkeyPause: 'Control+Digit2',
-    hotkeyResume: 'Control+Digit2',
+    hotkeyPause: 'Control+Alt+KeyD',
+    hotkeyResume: 'Control+Alt+KeyD',
     provider: 'groq',
     groqApiKey: DEFAULT_GROQ_API_KEY,
     groqModel: DEFAULT_GROQ_MODEL,
     groqPrompt: '',
     groqTemperature: 0.0,
-    groqLanguage: 'ru',
+    groqLanguage: 'auto',
     groqResponseFormat: 'verbose_json',
     postProcessEnabled: false,
     postProcessProvider: 'gemini',
@@ -319,13 +382,14 @@ export function defaultSettings(): AppSettings {
     autoCopyClipboard: true,
     autoPasteActiveWindow: true,
     historyMaxItems: 10,
-    scenarios: [scenario],
+    scenarios: [scenario, createVoiceAnswerScenario()],
     activeScenarioId: scenario.id,
-    scenarioVersion: 10,
+    androidScenarioId: scenario.id,
+    scenarioVersion: 17,
   };
 }
 
-function settingsFromLegacy(settings: Omit<AppSettings, 'scenarios' | 'activeScenarioId' | 'scenarioVersion'>): ScenarioStepSettingsDefaults {
+function settingsFromLegacy(settings: Omit<AppSettings, 'scenarios' | 'activeScenarioId' | 'androidScenarioId' | 'scenarioVersion'>): ScenarioStepSettingsDefaults {
   return {
     transcription: {
       provider: settings.provider,
@@ -349,8 +413,21 @@ function settingsFromLegacy(settings: Omit<AppSettings, 'scenarios' | 'activeSce
   };
 }
 
+export function resetGeneralSettings(settings: AppSettings): AppSettings {
+  const reset = normalizeSettings({
+    ...defaultSettings(),
+    scenarios: settings.scenarios,
+    activeScenarioId: settings.activeScenarioId,
+    androidScenarioId: settings.androidScenarioId,
+    scenarioVersion: settings.scenarioVersion,
+  });
+  // Scenario settings also have legacy mirrors at the top level.
+  return { ...reset, scenarios: settings.scenarios, activeScenarioId: settings.activeScenarioId, scenarioVersion: settings.scenarioVersion };
+}
+
 export function saveSettings(cfg: AppSettings): void {
   try {
+    refreshScenarioTriggerClaims(cfg.scenarios);
     const text = JSON.stringify(cfg);
     localStorage.setItem(SETTINGS_STORAGE_KEY, text);
     if (isAndroid) void androidCall('saveBubbleConfiguration', { text }).catch(console.warn);

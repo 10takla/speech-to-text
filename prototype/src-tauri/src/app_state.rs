@@ -2,7 +2,10 @@
 pub struct RecordHotkeyState(pub(crate) std::sync::Mutex<Option<tauri_plugin_global_shortcut::Shortcut>>);
 
 #[derive(Default)]
-pub struct ControlHotkeyState(pub(crate) std::sync::Mutex<(Option<tauri_plugin_global_shortcut::Shortcut>, Option<tauri_plugin_global_shortcut::Shortcut>)>);
+pub struct ScenarioHotkeyState(pub(crate) std::sync::Mutex<Vec<(tauri_plugin_global_shortcut::Shortcut, String)>>);
+
+#[derive(Default)]
+pub struct ControlHotkeyState(pub(crate) std::sync::Mutex<(Option<tauri_plugin_global_shortcut::Shortcut>, Option<tauri_plugin_global_shortcut::Shortcut>, bool)>);
 
 #[derive(Default)]
 pub(crate) struct PasteTarget {

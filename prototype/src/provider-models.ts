@@ -50,14 +50,18 @@ export async function fetchGroqSpeechModels(apiKey: string, signal?: AbortSignal
     .sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export async function fetchGeminiTextModels(apiKey: string, signal?: AbortSignal): Promise<ProviderModel[]> {
+export async function fetchGeminiTextModels(apiKey: string, signal?: AbortSignal, fetcher: typeof fetch = fetch): Promise<ProviderModel[]> {
+  const key = apiKey.trim();
+  if (!key) throw new Error('API-ключ Gemini не указан.');
   const models: ProviderModel[] = [];
   let pageToken = '';
 
   do {
-    const query = new URLSearchParams({ key: apiKey });
+    const query = new URLSearchParams();
     if (pageToken) query.set('pageToken', pageToken);
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?${query}`, { signal });
+    const response = await fetcher(`https://generativelanguage.googleapis.com/v1beta/models?${query}`, {
+      signal, headers: { 'x-goog-api-key': key },
+    });
     const body = await response.json().catch(() => ({})) as GeminiModelsResponse;
     if (!response.ok) throw new Error(readApiError(body.error?.message) || `HTTP ${response.status}`);
 
@@ -85,6 +89,15 @@ export async function fetchGeminiTextModels(apiKey: string, signal?: AbortSignal
   } while (pageToken);
 
   return models.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function selectAvailableGeminiModel(models: readonly ProviderModel[], requested: string): string {
+  const saved = requested.replace(/^models\//, '');
+  if (models.some(model => model.id === saved)) return saved;
+  // Prefer a stable general-purpose Flash returned by this key, not a hard-coded model version.
+  return models.find(model => /^gemini-[\d.]+-flash$/.test(model.id))?.id
+    ?? models.find(model => /^gemini-[\d.]+-(?:flash-lite|pro)$/.test(model.id))?.id
+    ?? models[0]?.id ?? '';
 }
 
 function readApiError(value: unknown): string {

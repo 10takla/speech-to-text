@@ -10,9 +10,11 @@ import android.media.AudioManager
 import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.text.InputType
 import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
@@ -36,9 +38,9 @@ class SpeechBubbleService : AccessibilityService() {
     private var attached = false
     private var active = false
     private var ownsRecording = false
-    private var field: AccessibilityNodeInfo? = null
     private var pendingStart: Pair<String, JSONObject>? = null
-    private var dismissedField: AccessibilityNodeInfo? = null
+    private val visibility = KeyboardBubbleVisibility()
+    private val refreshVisibility = Runnable { updateVisibility() }
     private val layout by lazy {
         WindowManager.LayoutParams(
             dp(50), dp(50),
@@ -49,31 +51,41 @@ class SpeechBubbleService : AccessibilityService() {
     }
     private val dragController by lazy { BubbleDragController(this, windowsManager, layout) { dismissBubble() } }
 
-    override fun onServiceConnected() { RuntimeBridge.bubble = this }
+    override fun onServiceConnected() {
+        RuntimeBridge.bubble = this
+        handler.post(refreshVisibility)
+    }
     fun isRecordingOwner() = ownsRecording
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        if (!isKeyboardVisible()) {
-            hide()
-            return
-        }
-        if (event.packageName?.toString() == packageName) return
-        val focused = rootInActiveWindow?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        val target = focused ?: event.source?.takeIf { it.isFocused }
-        if (target?.isEditable == true) {
-            field = target
-            if (target != dismissedField && (!RuntimeBridge.recorder.isRunning() || ownsRecording)) show()
-        } else if (!active && pendingStart == null) {
-            field = null
-            dismissedField = null
-            hide()
+        updateVisibility()
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED
+            || event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            // Window transitions can arrive before the IME is in the window list.
+            handler.removeCallbacks(refreshVisibility)
+            handler.postDelayed(refreshVisibility, 100)
         }
     }
 
-    private fun isKeyboardVisible() = windows.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+    private fun applicationRoot(available: List<AccessibilityWindowInfo>): AccessibilityNodeInfo? {
+        val application = available.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isFocused }
+            ?: available.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION && it.isActive }
+        return application?.root ?: rootInActiveWindow?.takeIf {
+            it.window?.type == AccessibilityWindowInfo.TYPE_APPLICATION
+        }
+    }
+
+    private fun updateVisibility() {
+        val available = windows
+        val keyboardVisible = available.any { it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+        val root = if (keyboardVisible) applicationRoot(available) else null
+        val ownApplication = root?.packageName?.toString() == packageName
+        val blocked = (ownApplication && !active && pendingStart == null)
+            || (RuntimeBridge.recorder.isRunning() && !ownsRecording)
+        if (visibility.update(keyboardVisible, blocked)) show() else hide()
+    }
 
     private fun show() {
-        if (!isKeyboardVisible()) return
         if (browser == null) browser = createBrowser()
         if (!attached) {
             windowsManager.addView(browser, layout)
@@ -88,7 +100,7 @@ class SpeechBubbleService : AccessibilityService() {
     }
 
     private fun dismissBubble() {
-        dismissedField = field
+        visibility.dismiss()
         evaluate("window.dispatchEvent(new CustomEvent('android-runtime-event',{detail:{action:'cancel-hotkey',text:''}}))")
         if (ownsRecording) RuntimeBridge.recorder.cancel()
         hide()
@@ -148,7 +160,18 @@ class SpeechBubbleService : AccessibilityService() {
             handler.post {
                 try {
                     val payload = JSONObject(json)
-                    if (action == "start") {
+                    if (action == "piperHttp") {
+                        PiperHttp.request(payload.getString("baseUrl"), payload.getString("route"), payload.optString("body")) { data, error -> reply(id, data, error) }
+                    } else if (action == "speechCapabilities") {
+                        SystemSpeech.capabilities(this@SpeechBubbleService) { data, error -> reply(id, data, error) }
+                    } else if (action == "synthesizeSpeech") {
+                        SystemSpeech.synthesize(this@SpeechBubbleService, payload.getString("text"), payload.getString("requestId"), payload) { data, error ->
+                            reply(id, data?.let { JSONObject().put("data", it) }, error)
+                        }
+                    } else if (action == "cancelSpeech") {
+                        SystemSpeech.cancel(payload.getString("requestId"))
+                        reply(id, null, null)
+                    } else if (action == "start") {
                         check(pendingStart == null) { "Запрос записи уже выполняется." }
                         check(!RuntimeBridge.recorder.isRunning()) { "Запись уже выполняется." }
                         pendingStart = id to payload
@@ -232,9 +255,34 @@ class SpeechBubbleService : AccessibilityService() {
 
     fun paste(text: String) {
         copyText(text)
-        val target = field ?: throw IllegalStateException("Нет активного поля. Текст сохранён в буфере обмена.")
-        check(target.refresh() && target.isEditable && target.isFocused && !target.isPassword) {
+        val root = applicationRoot(windows)
+        val currentField = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+        val target = currentField?.takeIf { it.isEditable && it.isFocused }
+        check(currentField?.isPassword != true && target?.isPassword != true) {
             "Поле недоступно для вставки. Текст сохранён в буфере обмена."
+        }
+        if (target == null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val method = inputMethod
+                val editor = method?.currentInputEditorInfo
+                val connection = method?.currentInputConnection
+                // Custom editors (including remote desktops) need not expose an editable node.
+                if (connection != null && editor != null && editor.packageName != packageName
+                    && editor.packageName == root?.packageName?.toString()) {
+                    val variation = editor.inputType and InputType.TYPE_MASK_VARIATION
+                    val password = when (editor.inputType and InputType.TYPE_MASK_CLASS) {
+                        InputType.TYPE_CLASS_TEXT -> variation == InputType.TYPE_TEXT_VARIATION_PASSWORD
+                            || variation == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                            || variation == InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD
+                        InputType.TYPE_CLASS_NUMBER -> variation == InputType.TYPE_NUMBER_VARIATION_PASSWORD
+                        else -> false
+                    }
+                    check(!password) { "Поле недоступно для вставки. Текст сохранён в буфере обмена." }
+                    connection.commitText(text, 1, null)
+                    return
+                }
+            }
+            throw IllegalStateException("Приложение не предоставляет доступный ввод. Текст сохранён в буфере обмена.")
         }
         val current = target.text?.toString() ?: ""
         val start = target.textSelectionStart.takeIf { it >= 0 } ?: current.length
@@ -253,6 +301,7 @@ class SpeechBubbleService : AccessibilityService() {
 
     override fun onInterrupt() { if (!active) hide() }
     override fun onDestroy() {
+        handler.removeCallbacks(refreshVisibility)
         if (RuntimeBridge.bubble === this) RuntimeBridge.bubble = null
         if (ownsRecording) { RuntimeBridge.bubbleEmit = null; RuntimeBridge.recorder.cancel(); stopService(Intent(this, RecordingService::class.java)) }
         hide()

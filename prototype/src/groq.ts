@@ -56,7 +56,7 @@ async function requestTranscription(
 ): Promise<TimedTranscript> {
   const apiKey = (options.apiKey || DEFAULT_GROQ_API_KEY).trim();
   const model = options.model || DEFAULT_GROQ_MODEL;
-  const language = options.language || 'ru';
+  const language = options.language || 'auto';
   const responseFormat = options.responseFormat || 'verbose_json';
   const temperature = options.temperature ?? 0.0;
   const prompt = options.prompt || '';

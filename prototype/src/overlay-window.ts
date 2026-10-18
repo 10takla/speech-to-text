@@ -13,6 +13,7 @@ interface OverlayWindowDependencies {
   getState(): OverlayState;
   getInvoke(): Invoke | null;
   settleResize?(): Promise<void>;
+  isPinned?(): boolean;
 }
 
 export interface OverlayWindowController {
@@ -55,6 +56,7 @@ export function createOverlayWindowController(dependencies: OverlayWindowDepende
 
   function syncMonitorTracking() {
     const shouldTrack = !!nativeWindow
+      && !dependencies.isPinned?.()
       && config().overlayFollowCursorMonitor
       && (dependencies.getState() !== 'idle' || widthPreviewActive);
     if (shouldTrack && monitorTrackingTimer === null) {
@@ -245,6 +247,7 @@ export function createOverlayWindowController(dependencies: OverlayWindowDepende
   }
 
   async function moveToCursorMonitor(reset = false) {
+    if (dependencies.isPinned?.()) return false;
     const invoke = dependencies.getInvoke();
     if (!invoke) {
       if (!reset) return false;
@@ -375,6 +378,8 @@ export function createOverlayWindowController(dependencies: OverlayWindowDepende
 
   dragHandle.addEventListener('mousedown', async event => {
     if (event.button !== 0 || nativeDragInProgress) return;
+    // Text remains selectable; dragging is reserved for the icon and empty header space.
+    if (event.target && event.target instanceof Element && event.target.closest('.overlay-title, .overlay-step-title, .overlay-step-body, .overlay-step-error, button, input, select, textarea')) return;
     const invoke = dependencies.getInvoke();
     if (nativeWindow && invoke) {
       nativeDragInProgress = true;

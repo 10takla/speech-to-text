@@ -2,6 +2,7 @@ package com.tauri.dev
 
 import android.Manifest
 import android.app.Activity
+import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioManager
@@ -12,6 +13,8 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.webkit.WebView
+import android.view.accessibility.AccessibilityManager
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.activity.result.ActivityResult
 import app.tauri.annotation.ActivityCallback
@@ -27,10 +30,21 @@ import org.json.JSONObject
 
 @InvokeArg
 class RuntimePayload {
+    var data: String = ""
+    var filename: String = ""
+    var mimeType: String = ""
+    var baseUrl: String = ""
+    var route: String = ""
+    var body: String = ""
+    var requestId: String = ""
     var deviceId: String = ""
     var state: String = ""
     var status: String = ""
     var text: String = ""
+    var voiceId: String = ""
+    var language: String = ""
+    var rate: Double = 1.0
+    var pitch: Double = 1.0
 }
 
 @InvokeArg
@@ -55,6 +69,24 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
     private var runtimeWebView: WebView? = null
 
     @ActivityCallback
+    fun recordingFileChosen(invoke: Invoke, result: ActivityResult) {
+        val uri = result.data?.data
+        if (result.resultCode != Activity.RESULT_OK || uri == null) {
+            invoke.resolve(JSObject().put("saved", false)); return
+        }
+        val payload = invoke.parseArgs(RuntimeArgs::class.java).payload
+        Thread {
+            try {
+                val bytes = android.util.Base64.decode(payload.data, android.util.Base64.DEFAULT)
+                val output = activity.contentResolver.openOutputStream(uri)
+                    ?: throw IllegalStateException("Не удалось открыть файл")
+                output.use { it.write(bytes) }
+                invoke.resolve(JSObject().put("saved", true))
+            } catch (error: Exception) { invoke.reject(error.message ?: "Не удалось сохранить аудиозапись") }
+        }.start()
+    }
+
+    @ActivityCallback
     fun configurationFileChosen(invoke: Invoke, result: ActivityResult) {
         val uri = result.data?.data
         if (result.resultCode != Activity.RESULT_OK || uri == null) { invoke.resolve(); return }
@@ -67,6 +99,11 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
     }
     override fun onDestroy() {
         RuntimeBridge.emit = null
+    }
+    override fun onResume(activity: AppCompatActivity) {
+        runtimeWebView?.post {
+            runtimeWebView?.evaluateJavascript("window.dispatchEvent(new Event('android-permissions-changed'))", null)
+        }
     }
     override fun load(webView: WebView) {
         runtimeWebView = webView
@@ -98,6 +135,28 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
     private fun execute(invoke: Invoke, args: RuntimeArgs) {
         try {
             when (args.action) {
+                "permissionStatus" -> {
+                    val manager = activity.getSystemService(AccessibilityManager::class.java)
+                    val overlay = manager.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK).any {
+                        val service = it.resolveInfo.serviceInfo
+                        service.packageName == activity.packageName && service.name == SpeechBubbleService::class.java.name
+                    }
+                    invoke.resolve(JSObject().put("overlay", overlay).put("microphone",
+                        ContextCompat.checkSelfPermission(activity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED))
+                }
+                "piperHttp" -> PiperHttp.request(args.payload.baseUrl, args.payload.route, args.payload.body) { data, error ->
+                    if (error != null) invoke.reject(error) else invoke.resolve(JSObject(data.toString()))
+                }
+                "speechCapabilities" -> SystemSpeech.capabilities(activity) { data, error ->
+                    if (error != null) invoke.reject(error) else invoke.resolve(JSObject(data.toString()))
+                }
+                "synthesizeSpeech" -> SystemSpeech.synthesize(activity, args.payload.text, args.payload.requestId,
+                    JSONObject().put("voiceId", args.payload.voiceId).put("language", args.payload.language)
+                        .put("rate", args.payload.rate).put("pitch", args.payload.pitch)) { data, error ->
+                    if (error != null) invoke.reject(error)
+                    else { val result = JSObject(); result.put("data", data); invoke.resolve(result) }
+                }
+                "cancelSpeech" -> { SystemSpeech.cancel(args.payload.requestId); invoke.resolve() }
                 "requestMicrophonePermission" -> invoke.resolve()
                 "microphones" -> {
                     val manager = activity.getSystemService(AudioManager::class.java)
@@ -169,6 +228,12 @@ class RuntimePlugin(private val activity: Activity) : Plugin(activity) {
                     val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
                         .setType("application/json").putExtra(Intent.EXTRA_TITLE, "speech-to-text-config.json")
                     startActivityForResult(invoke, intent, "configurationFileChosen")
+                }
+                "saveRecording" -> {
+                    val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                        .setType(args.payload.mimeType.ifBlank { "application/octet-stream" })
+                        .putExtra(Intent.EXTRA_TITLE, args.payload.filename.ifBlank { "recording.wav" })
+                    startActivityForResult(invoke, intent, "recordingFileChosen")
                 }
                 else -> invoke.reject("Неизвестная Android-команда: ${args.action}")
             }

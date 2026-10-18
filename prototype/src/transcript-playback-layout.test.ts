@@ -1,5 +1,25 @@
 import { expect, it } from 'vitest';
-import { playbackRows, playbackClassChangesLayout } from './transcript-playback-layout';
+import { playbackRows, playbackClassChangesLayout, segmentAtPosition, segmentTrackIsPlaying } from './transcript-playback-layout';
+
+it('highlights the segment track for both direct and fragment or global playback', () => {
+  const source = (direct: boolean, currentSegment: boolean) => ({
+    classList: { contains: (name: string) => name === 'playing' && direct },
+    closest: (selector: string) => selector === '.fragment-segment-playing' && currentSegment ? {} : null,
+  }) as unknown as HTMLElement;
+  expect(segmentTrackIsPlaying(source(true, false))).toBe(true);
+  expect(segmentTrackIsPlaying(source(false, true))).toBe(true);
+  expect(segmentTrackIsPlaying(source(false, false))).toBe(false);
+});
+
+it('selects a whole segment by text width, including gaps and track edges', () => {
+  const segments = [{ left: 10, right: 80 }, { left: 90, right: 110 }];
+  expect(segmentAtPosition(segments, 70)).toBe(segments[0]);
+  expect(segmentAtPosition(segments, 100)).toBe(segments[1]);
+  expect(segmentAtPosition(segments, 87)).toBe(segments[1]);
+  expect(segmentAtPosition(segments, 0)).toBe(segments[0]);
+  expect(segmentAtPosition(segments, 120)).toBe(segments[1]);
+  expect(segmentAtPosition([], 20)).toBeUndefined();
+});
 
 it('splits a wrapped fragment into independent playback rows', () => {
   const rows = playbackRows([

@@ -1,5 +1,6 @@
 import { configureAndroidEnvironment } from './android-environment.mjs';
 import { spawnSync } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import {
   copyFileSync, cpSync, existsSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync,
   renameSync, rmSync, statSync, lstatSync, writeFileSync,
@@ -10,7 +11,7 @@ import process from 'node:process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { spawnTracked, stopChildren, stopWindowsProcess, windowsProcesses } from './watcher-processes.mjs';
-import { createDeviceResolver, isWifiEndpoint, savedDeviceConnections } from './android-device-state.mjs';
+import { createDeviceResolver, savedDeviceConnections } from './android-device-state.mjs';
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptsDir, '..');
@@ -21,7 +22,7 @@ const logsDir = path.join(root, 'logs');
 const exe = process.platform === 'win32' ? '.exe' : '';
 const gradleScript = process.platform === 'win32' ? 'gradlew.bat' : 'gradlew';
 const apk = path.join(androidDir, 'app', 'build', 'outputs', 'apk', 'arm64', 'debug', 'app-arm64-debug.apk');
-const savedDevicePath = path.join(toolsDir, 'device.json');
+const savedDevicesPath = path.join(toolsDir, 'devices.json');
 const lockPath = path.join(toolsDir, 'watch.lock');
 
 function fail(message) { throw new Error(message); }
@@ -60,12 +61,20 @@ function run(file, args, options = {}) {
     const child = spawnTracked(file, args, {
       cwd: options.cwd ?? root,
       env: options.env ?? process.env,
-      stdio: options.stdio ?? 'inherit',
+      stdio: options.logPrefix ? ['ignore', 'pipe', 'pipe'] : options.stdio ?? 'inherit',
       shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(file),
       timeout: options.timeout ?? (file === adb ? 60000 : undefined),
       windowsHide: true,
     });
-    child.once('error', error => resolve({ code: 1, error }));
+    if (options.logPrefix) {
+      for (const [input, output] of [[child.stdout, process.stdout], [child.stderr, process.stderr]]) {
+        createInterface({ input, crlfDelay: Infinity }).on('line', line => output.write(`${options.logPrefix} ${line}\n`));
+      }
+    }
+    child.once('error', error => {
+      if (options.logPrefix) console.warn(`${options.logPrefix} ${error.message}`);
+      resolve({ code: 1, error });
+    });
     child.once('close', (code, signal) => resolve({ code: code ?? (signal ? 1 : 0), signal }));
   });
 }
@@ -78,6 +87,19 @@ function capture(file, args) {
     console.warn(`ADB не отвечает: ${args.join(' ')}. Продолжу проверять подключение.`);
   }
   return result.error || result.status !== 0 ? '' : result.stdout ?? '';
+}
+
+function captureAdb(args) {
+  return new Promise(resolve => {
+    let output = '';
+    const child = spawnTracked(adb, args, {
+      cwd: root, stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, windowsHide: true,
+    });
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => { output += chunk; });
+    child.once('error', () => resolve(''));
+    child.once('close', code => resolve(code === 0 ? output : ''));
+  });
 }
 
 function portOpen(port) {
@@ -177,21 +199,13 @@ async function startVite() {
 
 function loadSavedDevices() {
   try {
-    return savedDeviceConnections(JSON.parse(readFileSync(savedDevicePath, 'utf8')));
+    return savedDeviceConnections(JSON.parse(readFileSync(savedDevicesPath, 'utf8')));
   } catch { return new Map(); }
 }
 const savedDevices = loadSavedDevices();
-function persistDeviceIds() {
-  mkdirSync(toolsDir, { recursive: true });
-  const devices = [...savedDevices.values()].sort((a, b) => (a.id ?? a.wifiEndpoint).localeCompare(b.id ?? b.wifiEndpoint));
-  const temporaryPath = `${savedDevicePath}.${process.pid}.tmp`;
-  writeFileSync(temporaryPath, `${JSON.stringify({ devices }, null, 2)}\n`);
-  renameSync(temporaryPath, savedDevicePath);
-}
 const deviceResolver = createDeviceResolver({
-  capture: args => capture(adb, args),
+  capture: captureAdb,
   savedDevices,
-  persist: persistDeviceIds,
 });
 const { identify: identifyDevice, resolve: resolveDevices } = deviceResolver;
 function sourceDeviceArgument() {
@@ -275,41 +289,37 @@ async function buildApk(buildRust) {
   return true;
 }
 
-async function ensureReverse(endpoint) {
-  const rules = capture(adb, ['-s', endpoint, 'reverse', '--list']);
+async function ensureReverse(endpoint, serial = endpoint) {
+  const rules = await captureAdb(['-s', endpoint, 'reverse', '--list']);
   if (rules.split(/\r?\n/).some(line => /(?:^|\s)tcp:5174\s+tcp:5174(?:\s|$)/.test(line))) return true;
-  return (await run(adb, ['-s', endpoint, 'reverse', 'tcp:5174', 'tcp:5174'], { timeout: 10000 })).code === 0;
+  return (await run(adb, ['-s', endpoint, 'reverse', 'tcp:5174', 'tcp:5174'], { timeout: 10000, logPrefix: `[${serial}]` })).code === 0;
 }
 
-async function installApk({ id, endpoint }) {
+async function installApk({ serial, endpoint }) {
   const started = Date.now();
-  if (identifyDevice(endpoint) !== id) {
-    console.warn(`ADB ${endpoint}: устройство сменилось или не отвечает. Установка отменена; повторно обнаружу телефон.`);
+  if (await identifyDevice(endpoint) !== serial) {
+    console.warn(`[${serial}] ADB ${endpoint}: устройство сменилось или не отвечает. Установка отменена; повторно обнаружу телефон.`);
     return false;
   }
-  if (!await ensureReverse(endpoint)) return false;
+  if (!await ensureReverse(endpoint, serial)) return false;
   for (const args of [
     ['-s', endpoint, 'install', '-r', apk],
     ['-s', endpoint, 'shell', 'am', 'force-stop', 'com.speechtotext.app.debug'],
     ['-s', endpoint, 'shell', 'am', 'start', '-n', 'com.speechtotext.app.debug/com.speechtotext.app.MainActivity'],
-  ]) if ((await run(adb, args)).code !== 0) return false;
-  console.log(`Install and launch: ${((Date.now() - started) / 1000).toFixed(1)}s`);
+  ]) if ((await run(adb, args, { logPrefix: `[${serial}]` })).code !== 0) return false;
+  console.log(`[${serial}] Install and launch: ${((Date.now() - started) / 1000).toFixed(1)}s`);
   return true;
 }
 
 async function main() {
   acquireLock();
   try {
-    // Persist normalization once so old IP-only entries do not survive watcher restarts.
-    persistDeviceIds();
     const requestedDevice = sourceDeviceArgument();
-    let requestedId;
+    let requestedSerial;
     if (requestedDevice) {
-      if (isWifiEndpoint(requestedDevice)) await run(adb, ['connect', requestedDevice], { timeout: 10000 });
-      const device = resolveDevices(true).find(device => device.id === requestedDevice || device.endpoint === requestedDevice);
-      requestedId = device?.id ?? (savedDevices.has(requestedDevice) ? requestedDevice : null);
-      if (!requestedId) fail(`Не удалось распознать ${requestedDevice} по ro.serialno. Проверьте подключение и разрешение отладки.`);
-      console.log(`Выбран телефон: ${requestedId}. Адрес подключения может меняться.`);
+      if (!savedDevices.has(requestedDevice)) fail(`Серийный номер ${requestedDevice} отсутствует в devices.json.`);
+      requestedSerial = requestedDevice;
+      console.log(`Выбран телефон: ${requestedSerial}. Адрес подключения может меняться.`);
     }
     await startVite();
     let lastAttemptSignature = '';
@@ -318,7 +328,7 @@ async function main() {
     let changedAt = Date.now();
     let lastConnectionCheck = 0;
     let apkReady = false;
-    const installedDeviceIds = new Set();
+    const installedDeviceSerials = new Set();
     const lastInstallAttempts = new Map();
     let lastEndpoints = new Map();
     let waitingMessageShown = false;
@@ -333,7 +343,7 @@ async function main() {
         if (await buildApk(rustSignature !== lastRustSignature)) {
           lastRustSignature = rustSignature;
           apkReady = true;
-          installedDeviceIds.clear();
+          installedDeviceSerials.clear();
           lastInstallAttempts.clear();
           waitingMessageShown = false;
           console.log('APK готов к установке.');
@@ -342,27 +352,30 @@ async function main() {
       }
       if (Date.now() - lastConnectionCheck >= 10000) {
         lastConnectionCheck = Date.now();
-        const devices = resolveDevices(true).filter(device => !requestedId || device.id === requestedId);
-        const currentEndpoints = new Map(devices.map(device => [device.id, device.endpoint]));
-        for (const [id] of lastEndpoints) {
-          if (!currentEndpoints.has(id)) console.log(`ADB-устройство отключено: ${id}. Ожидаю повторного подключения.`);
+        const devices = (await resolveDevices(true)).filter(device => !requestedSerial || device.serial === requestedSerial);
+        const currentEndpoints = new Map(devices.map(device => [device.serial, device.endpoint]));
+        for (const [serial] of lastEndpoints) {
+          if (!currentEndpoints.has(serial)) console.log(`ADB-устройство отключено: ${serial}. Ожидаю повторного подключения.`);
         }
-        for (const device of devices) {
-          if (lastEndpoints.get(device.id) !== device.endpoint) {
-            console.log(`ADB-устройство подключено: ${device.id} (${device.endpoint})`);
-            lastInstallAttempts.delete(device.id);
+        const results = await Promise.allSettled(devices.map(async device => {
+          if (lastEndpoints.get(device.serial) !== device.endpoint) {
+            console.log(`ADB-устройство подключено: ${device.serial} (${device.endpoint})`);
+            lastInstallAttempts.delete(device.serial);
           }
-          if (!await ensureReverse(device.endpoint)) {
+          if (!await ensureReverse(device.endpoint, device.serial)) {
             console.warn(`ADB ${device.endpoint}: не удалось восстановить доступ к Vite. Повторю проверку подключения.`);
-            continue;
+            return;
           }
-          if (apkReady && !installedDeviceIds.has(device.id)
-            && Date.now() - (lastInstallAttempts.get(device.id) ?? 0) >= 30000) {
-            lastInstallAttempts.set(device.id, Date.now());
-            console.log(`Устанавливаю APK: ${device.id} (${device.endpoint}).`);
-            if (await installApk(device)) installedDeviceIds.add(device.id);
+          if (apkReady && !installedDeviceSerials.has(device.serial)
+            && Date.now() - (lastInstallAttempts.get(device.serial) ?? 0) >= 30000) {
+            lastInstallAttempts.set(device.serial, Date.now());
+            console.log(`Устанавливаю APK: ${device.serial} (${device.endpoint}).`);
+            if (await installApk(device)) installedDeviceSerials.add(device.serial);
             else console.warn(`Не удалось установить APK на ${device.endpoint}. Повторю попытку через 30 секунд.`);
           }
+        }));
+        for (const [index, result] of results.entries()) {
+          if (result.status === 'rejected') console.warn(`ADB ${devices[index].endpoint}: ${result.reason?.message ?? result.reason}`);
         }
         if (apkReady && !devices.length && !waitingMessageShown) {
           console.log('ADB-устройства не найдены. APK собран; ожидаю подключения устройства.');

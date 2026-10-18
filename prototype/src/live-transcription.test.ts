@@ -4,6 +4,43 @@ import { createLiveTranscriber } from './live-transcription';
 vi.mock('./audio-decoding', () => ({ decodeAudio: vi.fn(async () => ({ duration: 1.73 })) }));
 
 describe('live transcription service', () => {
+  it('reports processing only during the API request and result merge, and resets on cancellation', async () => {
+    vi.stubGlobal('window', globalThis);
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] });
+    const onProcessing = vi.fn();
+    let resolve!: (value: { text: string; segments: [] }) => void;
+    const onPreview = vi.fn(() => expect(onProcessing).toHaveBeenLastCalledWith('running'));
+    const live = createLiveTranscriber({
+      getState: () => 'recording',
+      getSettings: () => ({ liveTranscriptionEnabled: true, liveSilenceDurationMs: 700, liveMaxChunkDurationSeconds: 9, liveChunkOverlapSeconds: .5 }),
+      snapshotAudio: async () => new ArrayBuffer(0),
+      provider: { transcribe: () => new Promise(result => { resolve = result; }) },
+      cutAudio: () => new Blob(), onPreview, onError: vi.fn(), onProcessing,
+    });
+    try {
+      live.start();
+      expect(onProcessing).not.toHaveBeenCalled();
+      live.observeSpeechLevel(.02);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(onProcessing).toHaveBeenLastCalledWith('running');
+      resolve({ text: 'Фрагмент', segments: [] });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onPreview).toHaveBeenCalledWith('Фрагмент');
+      expect(onProcessing).toHaveBeenLastCalledWith('success');
+      live.start(true);
+      live.observeSpeechLevel(.02);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(onProcessing).toHaveBeenLastCalledWith('running');
+      live.stop();
+      expect(onProcessing).toHaveBeenLastCalledWith('idle');
+      const calls = onProcessing.mock.calls.length;
+      resolve({ text: 'Устаревший ответ', segments: [] });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(onProcessing).toHaveBeenCalledTimes(calls);
+    } finally {
+      live.stop(); vi.useRealTimers(); vi.unstubAllGlobals();
+    }
+  });
   it('replaces the edited baseline, preserves real repeated words, and publishes the complete preview', () => {
     const onPreview = vi.fn();
     const live = createLiveTranscriber({

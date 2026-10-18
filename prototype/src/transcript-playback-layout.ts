@@ -49,6 +49,13 @@ interface PlaybackSource {
   playing?(): boolean;
 }
 
+export function segmentAtPosition<T extends { left: number; right: number }>(segments: T[], x: number): T | undefined {
+  return segments.reduce<T | undefined>((nearest, segment) => {
+    const distance = (item: T) => Math.max(item.left - x, 0, x - item.right);
+    return !nearest || distance(segment) < distance(nearest) ? segment : nearest;
+  }, undefined);
+}
+
 /** Playback state only changes colours and availability in the shared editor styles. */
 export function playbackClassChangesLayout(previous: string, current: string): boolean {
   const geometryClasses = (value: string) => value.split(/\s+/).filter(name => name
@@ -56,12 +63,17 @@ export function playbackClassChangesLayout(previous: string, current: string): b
   return geometryClasses(previous) !== geometryClasses(current);
 }
 
+export function segmentTrackIsPlaying(source: HTMLElement): boolean {
+  return source.classList.contains('playing') || !!source.closest('.fragment-segment-playing');
+}
+
 /** Add fragment/all playback tracks below every visual line, keeping their audio actions intact. */
 export function attachTranscriptPlaybackLayout(
   flow: HTMLElement,
   sources: PlaybackSource[],
   allBar: HTMLElement,
-  activateSource?: (source: HTMLElement) => void,
+  activateSource?: (source: HTMLElement, segment?: HTMLElement) => void,
+  contextSource?: (source: HTMLElement, event: MouseEvent) => void,
 ) {
   flow.classList.add('transcript-line-layout');
   sources.forEach(source => {
@@ -201,19 +213,32 @@ export function attachTranscriptPlaybackLayout(
         sync();
         button.style.left = `${left - row.left}px`;
         button.style.width = `${Math.max(0, right - left)}px`;
-        button.onclick = () => {
+        button.onclick = event => {
           if (debugHistory) console.info('[history-playback-debug] track handler', JSON.stringify({
             level: ['segment', 'fragment', 'all'][level], disabled: button.disabled,
             source: source.className, hasDirectAction: !!activateSource,
           }));
-          if (activateSource) activateSource(source);
+          const candidates = segmentTracks.filter(segment => Math.abs(segment.top - row.top) < 1.5
+            && (level === 2 || sources[segment.fragment].element.contains(source)));
+          const segment = event.detail === 0 ? candidates[0]
+            : segmentAtPosition(candidates, event.clientX - (flow.getBoundingClientRect().left + flow.clientLeft - flow.scrollLeft));
+          if (activateSource) activateSource(source, segment?.source);
           else source.click();
         };
+        if (contextSource) {
+          button.setAttribute('aria-haspopup', 'menu');
+          button.oncontextmenu = event => {
+            if (button.disabled) return;
+            event.preventDefault();
+            event.stopPropagation();
+            contextSource(source, event);
+          };
+        }
         levels[level].append(button);
       }
 
       segmentTracks.filter(segment => Math.abs(segment.top - row.top) < 1.5).forEach(segment => {
-        track(segment.source, 0, segment.left, segment.right);
+        track(segment.source, 0, segment.left, segment.right, () => segmentTrackIsPlaying(segment.source));
       });
       row.fragments.forEach(fragment => {
         const source = sources[fragment.fragment];

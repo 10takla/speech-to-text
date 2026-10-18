@@ -1,6 +1,7 @@
 import type { HistoryFragment, HistoryItem } from './history-db';
 import { attachTranscriptPlaybackLayout } from './transcript-playback-layout';
 import { claimPlayback, releasePlayback } from './playback-coordinator';
+import type { HistoryAudioExcerpt } from './history-audio-excerpt';
 
 const labelTime = (time: number) => `${Math.floor(time / 60)}:${(time % 60).toFixed(2).padStart(5, '0')}`;
 export const segmentIsDeleted = (segment: { start: number; end: number }, ranges: { start: number; end: number }[]) =>
@@ -26,7 +27,8 @@ export function historyFragments(record: HistoryItem): HistoryFragment[] {
     segments: record.segments, removedRanges: record.removedRanges || [] }];
 }
 
-export function renderHistoryFragments(record: HistoryItem) {
+export function renderHistoryFragments(record: HistoryItem,
+  onContextMenu?: (event: MouseEvent, excerpt: HistoryAudioExcerpt) => void) {
   const fragments = historyFragments(record);
   if (!fragments.length) return null;
   const element = document.createElement('div');
@@ -38,6 +40,18 @@ export function renderHistoryFragments(record: HistoryItem) {
   const fragmentSections: HTMLElement[] = [];
   const playbackActions = new WeakMap<HTMLElement, () => void>();
   type PlaybackTarget = { fragmentIndex: number; start: number; end: number };
+  const excerpts = new WeakMap<HTMLElement, { label: string; filenameSuffix: string; targets(): PlaybackTarget[] }>();
+  const openContextMenu = (source: HTMLElement, event: MouseEvent) => {
+    const selection = excerpts.get(source);
+    if (!selection || !onContextMenu) return;
+    const parts = selection.targets().flatMap(target => {
+      const audio = fragments[target.fragmentIndex].audioBlob;
+      return audio?.size ? [{ audio, start: target.start, end: target.end }] : [];
+    });
+    if (!parts.length) return;
+    event.preventDefault(); event.stopPropagation();
+    onContextMenu(event, { label: selection.label, filenameSuffix: selection.filenameSuffix, parts });
+  };
   let playbackQueue: PlaybackTarget[] = [];
   let queueIndex = 0;
   let activeAudio: HTMLAudioElement | null = null;
@@ -180,6 +194,10 @@ export function renderHistoryFragments(record: HistoryItem) {
       };
       playBar.addEventListener('click', playSegment);
       playbackActions.set(playBar, playSegment);
+      excerpts.set(playBar, { label: `Сегмент ${i + 1} отрывка ${index + 1}`,
+        filenameSuffix: `fragment-${index + 1}-segment-${i + 1}`,
+        targets: () => [{ fragmentIndex: index, start: segment.start, end: segment.end }] });
+      playBar.addEventListener('contextmenu', event => { if (!playBar.disabled) openContextMenu(playBar, event); });
       pair.append(text, audioBar, playBar);
       if (i > 0) segments.append(document.createTextNode(' '));
       segments.append(pair);
@@ -213,6 +231,9 @@ export function renderHistoryFragments(record: HistoryItem) {
     };
     fragmentBar.addEventListener('click', playFragment);
     playbackActions.set(fragmentBar, playFragment);
+    excerpts.set(fragmentBar, { label: `Отрывок ${index + 1}`, filenameSuffix: `fragment-${index + 1}`,
+      targets: () => retainedRanges(fragment).map(range => ({ fragmentIndex: index, ...range })) });
+    fragmentBar.addEventListener('contextmenu', event => { if (!fragmentBar.disabled) openContextMenu(fragmentBar, event); });
     fragmentBars.push(fragmentBar);
 
     section.append(segments);
@@ -236,6 +257,10 @@ export function renderHistoryFragments(record: HistoryItem) {
   };
   allPlaybackBar.addEventListener('click', playAll);
   playbackActions.set(allPlaybackBar, playAll);
+  excerpts.set(allPlaybackBar, { label: 'Вся запись', filenameSuffix: 'all',
+    targets: () => fragments.flatMap((fragment, fragmentIndex) =>
+      retainedRanges(fragment).map(range => ({ fragmentIndex, ...range }))) });
+  allPlaybackBar.addEventListener('contextmenu', event => { if (!allPlaybackBar.disabled) openContextMenu(allPlaybackBar, event); });
   element.append(allPlaybackBar);
 
   const playbackLayout = attachTranscriptPlaybackLayout(element,
@@ -244,7 +269,7 @@ export function renderHistoryFragments(record: HistoryItem) {
       const action = playbackActions.get(source);
       debug('source action', { record: record.id, source: source.className, found: !!action });
       action?.();
-    });
+    }, onContextMenu ? openContextMenu : undefined);
 
   function dispose() {
     playbackLayout.dispose();

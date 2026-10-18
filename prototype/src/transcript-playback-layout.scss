@@ -103,13 +103,14 @@
   border: 0;
   border-radius: 2px;
   opacity: .85;
-  background: #ef4444;
+  background-color: #ef4444;
   cursor: pointer;
   pointer-events: auto;
-  &.transcript-row-track-all { background: #dc2626; opacity: .9; }
-  &.playing { background: #10b981; box-shadow: 0 0 4px #10b981; }
-  &:disabled { background: #501313; opacity: .35; cursor: default; }
-  &.all-segments-deleted { background: #dc2626; opacity: 1; box-shadow: 0 0 4px rgba(239, 68, 68, .65); }
+  &.transcript-row-track-all { background-color: #dc2626; opacity: .9; }
+  &.playing { background-color: #10b981; box-shadow: 0 0 4px #10b981; }
+  &:disabled { background-color: #501313; opacity: .35; cursor: default; }
+  &.all-segments-deleted { background-color: #dc2626; opacity: 1; box-shadow: 0 0 4px rgba(239, 68, 68, .65); }
   &:hover:not(:disabled) { filter: brightness(1.2); }
   &:focus-visible { outline: 1px solid #fff; outline-offset: 1px; }
 }
+

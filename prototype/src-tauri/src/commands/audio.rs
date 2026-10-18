@@ -19,7 +19,14 @@ pub fn start_audio_recording(
     state: tauri::State<'_, audio_capture::AudioCaptureState>,
     device_id: Option<String>,
 ) -> Result<(), String> {
-    state.start(device_id)
+    #[cfg(windows)]
+    super::clipboard_history::begin_recording();
+    let result = state.start(device_id);
+    #[cfg(windows)]
+    if result.is_err() {
+        super::clipboard_history::end_recording();
+    }
+    result
 }
 
 #[tauri::command]
@@ -59,6 +66,8 @@ pub fn cancel_audio_recording(
     paste_target: tauri::State<'_, PasteTargetState>,
 ) {
     state.cancel();
+    #[cfg(windows)]
+    super::clipboard_history::end_recording();
     if let Ok(mut target) = paste_target.0.lock() {
         target.hwnd = None;
         target.recording = false;

@@ -14,7 +14,7 @@ function harness() {
   }));
   words.forEach(word => {
     word.classList.contains = name => name === 'deleted' && word.deleted;
-    word.closest = selector => selector === '[data-segment]' ? word : null;
+    word.closest = selector => ['[data-segment]', '.editor-segment'].includes(selector) ? word : null;
   });
   const capture = new Set<number>();
   const panel = Object.assign(new EventTarget(), {
@@ -56,6 +56,16 @@ it('keeps a short touch tap available to the segment click handler', () => {
   expect(h.panel.setPointerCapture).not.toHaveBeenCalled();
   expect(h.changes).not.toHaveBeenCalled();
   expect(h.pointer(h.panel, 'click', 5, 5, h.words[0]).defaultPrevented).toBe(false);
+});
+
+it('ignores holds in the empty padding of a segment container', () => {
+  const h = harness();
+  const padding = { closest: (selector: string) => selector === '[data-segment]' ? h.words[0] : null };
+  h.pointer(h.panel, 'pointerdown', 5, 18, padding as unknown as typeof h.words[number]);
+  vi.advanceTimersByTime(300);
+  h.pointer(h.view, 'pointermove', 35);
+  expect(h.changes).not.toHaveBeenCalled();
+  expect(h.panel.setPointerCapture).not.toHaveBeenCalled();
 });
 
 it('captures a held touch and paints across words and rows without toggling twice on release', () => {

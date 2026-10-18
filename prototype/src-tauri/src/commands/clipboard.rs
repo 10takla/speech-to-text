@@ -17,8 +17,6 @@ pub async fn paste_text_into_active_window(
 }
 
 fn paste_text(app: AppHandle, text: String, target: Option<isize>) -> Result<(), String> {
-    #[cfg(windows)]
-    super::clipboard_history::write_text_for_paste(&text)?;
     #[cfg(not(windows))]
     {
         use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -34,80 +32,97 @@ fn paste_text(app: AppHandle, text: String, target: Option<isize>) -> Result<(),
             VK_V,
         };
         use windows_sys::Win32::UI::WindowsAndMessaging::{
-            GetForegroundWindow, SetForegroundWindow,
+            GetForegroundWindow, IsHungAppWindow, IsWindow, SetForegroundWindow,
         };
 
         let _ = app;
         let target =
             target.ok_or_else(|| "Не найдено окно, активное при начале записи.".to_string())?;
         let target = target as windows_sys::Win32::Foundation::HWND;
-        if unsafe { GetForegroundWindow() } != target && unsafe { SetForegroundWindow(target) } == 0
-        {
-            return Err("Windows не разрешила вернуть фокус в исходное окно.".into());
+        if unsafe { IsWindow(target) } == 0 {
+            return Err("Исходное окно уже закрыто.".into());
         }
-        std::thread::sleep(std::time::Duration::from_millis(80));
+        if unsafe { IsHungAppWindow(target) } != 0 {
+            return Err("Исходное окно не отвечает. Вставка отменена.".into());
+        }
+        if unsafe { GetForegroundWindow() } != target {
+            if unsafe { SetForegroundWindow(target) } == 0 {
+                return Err("Windows не разрешила вернуть фокус в исходное окно.".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(80));
+        }
+        if unsafe { GetForegroundWindow() } != target {
+            return Err("Исходное окно потеряло фокус. Вставка отменена.".into());
+        }
+        let target_handle = target as isize;
+        super::clipboard_history::with_text_for_paste(&text, move || {
+            let target = target_handle as windows_sys::Win32::Foundation::HWND;
+            if unsafe { GetForegroundWindow() } != target {
+                return Err("Исходное окно потеряло фокус. Вставка отменена.".into());
+            }
 
-        let inputs = [
-            INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: VK_CONTROL,
-                        wScan: 0,
-                        dwFlags: 0,
-                        time: 0,
-                        dwExtraInfo: 0,
+            let inputs = [
+                INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VK_CONTROL,
+                            wScan: 0,
+                            dwFlags: 0,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
                     },
                 },
-            },
-            INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: VK_V,
-                        wScan: 0,
-                        dwFlags: 0,
-                        time: 0,
-                        dwExtraInfo: 0,
+                INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VK_V,
+                            wScan: 0,
+                            dwFlags: 0,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
                     },
                 },
-            },
-            INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: VK_V,
-                        wScan: 0,
-                        dwFlags: KEYEVENTF_KEYUP,
-                        time: 0,
-                        dwExtraInfo: 0,
+                INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VK_V,
+                            wScan: 0,
+                            dwFlags: KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
                     },
                 },
-            },
-            INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: VK_CONTROL,
-                        wScan: 0,
-                        dwFlags: KEYEVENTF_KEYUP,
-                        time: 0,
-                        dwExtraInfo: 0,
+                INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VK_CONTROL,
+                            wScan: 0,
+                            dwFlags: KEYEVENTF_KEYUP,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
                     },
                 },
-            },
-        ];
-        let sent = unsafe {
-            SendInput(
-                inputs.len() as u32,
-                inputs.as_ptr(),
-                std::mem::size_of::<INPUT>() as i32,
-            )
-        };
-        if sent != inputs.len() as u32 {
-            return Err("Windows не отправила Ctrl+V в активное поле.".into());
-        }
-        Ok(())
+            ];
+            let sent = unsafe {
+                SendInput(
+                    inputs.len() as u32,
+                    inputs.as_ptr(),
+                    std::mem::size_of::<INPUT>() as i32,
+                )
+            };
+            if sent != inputs.len() as u32 {
+                return Err("Windows не отправила Ctrl+V в активное поле.".into());
+            }
+            Ok(())
+        })
     }
 
     #[cfg(not(windows))]
@@ -128,7 +143,9 @@ pub async fn write_clipboard_text(app: AppHandle, text: String) -> Result<(), St
             }
         }
         unreachable!()
-    }).await.map_err(|error| error.to_string())?
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]

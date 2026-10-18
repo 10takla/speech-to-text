@@ -90,16 +90,19 @@ pub fn resize_overlay_to_content(app: AppHandle, width: f64, height: f64, keep_c
 }
 
 #[tauri::command]
-pub fn hide_overlay(app: AppHandle) -> Result<(), String> {
+pub fn hide_overlay(app: AppHandle) -> Result<bool, String> {
+    #[cfg(windows)]
+    super::clipboard_history::end_recording();
     if let Ok(mut target) = app.state::<PasteTargetState>().0.lock() {
         target.recording = false;
         target.hwnd = None;
     }
+    if super::overlay_interaction::is_pinned() { return Ok(false); }
     let window = app
         .get_webview_window("overlay")
         .ok_or_else(|| "Overlay window not found".to_string())?;
     window.hide().map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(true)
 }
 
 #[tauri::command]

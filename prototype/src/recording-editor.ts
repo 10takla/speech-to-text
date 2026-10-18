@@ -4,8 +4,13 @@ import { attachTranscriptPlaybackLayout } from './transcript-playback-layout';
 import { claimPlayback, ownsPlayback, releasePlayback } from './playback-coordinator';
 import { fitTranscriptToAudio } from './transcript-timing';
 import { attachSegmentPainting } from './segment-painting';
+import { attachTranscriptCopy } from './transcript-copy';
 
 export type TimeRange = { start: number; end: number };
+
+export function retainedPlaybackOffset(ranges: TimeRange[], start: number): number {
+  return ranges.reduce((offset, range) => offset + Math.max(0, Math.min(start, range.end) - range.start), 0);
+}
 export interface EditedRecording {
   audioBlob: Blob;
   transcript: TimedTranscript;
@@ -89,6 +94,7 @@ export function createRecordingEditor(
     <div class="fragment-playback-bar" title="Воспроизвести отрывок" role="button" aria-label="Воспроизвести отрывок"></div>
     <div class="overlay-controls"><button class="btn secondary editor-cancel">Отмена</button><button class="btn secondary editor-finish" disabled>Завершить запись</button><button class="btn primary editor-apply" disabled></button></div>`;
   host.append(element);
+  const stopCopy = sharedPainting ? () => {} : attachTranscriptCopy(element);
   const query = <T extends HTMLElement>(selector: string) => element.querySelector<T>(selector)!;
   const status = query<HTMLElement>('.editor-status');
   const segmentList = query<HTMLElement>('.editor-segments');
@@ -116,6 +122,7 @@ export function createRecordingEditor(
   function dispose() {
     if (closed) return;
     closed = true;
+    stopCopy();
     segmentPlayback?.stop();
     releasePlayback(playButton);
     stopSegmentPlaybackAnimation();
@@ -247,7 +254,7 @@ export function createRecordingEditor(
     }
     segmentList.addEventListener('pointerdown', e => {
       if (e.button !== 0) return;
-      const target = (e.target as HTMLElement).closest<HTMLElement>('[data-segment]');
+      const target = (e.target as HTMLElement).closest('.editor-segment')?.closest<HTMLElement>('[data-segment]');
       if (!target) return;
       painted = false;
       paintStart = { index: Number(target.dataset.segment), x: e.clientX, y: e.clientY, pointer: e.pointerId, remove: !isRemoved(transcript!.segments[Number(target.dataset.segment)]) };
@@ -260,7 +267,7 @@ export function createRecordingEditor(
     segmentList.addEventListener('pointermove', e => {
       if (!paintStart || (!painted && Math.hypot(e.clientX - paintStart.x, e.clientY - paintStart.y) < 5)) return;
       if (holdTimer) clearTimeout(holdTimer);
-      const target = document.elementFromPoint(e.clientX, e.clientY)?.closest<HTMLElement>('[data-segment]');
+      const target = document.elementFromPoint(e.clientX, e.clientY)?.closest('.editor-segment')?.closest<HTMLElement>('[data-segment]');
       if (target && segmentList.contains(target)) {
         segmentList.setPointerCapture(e.pointerId);
         paint(Number(target.dataset.segment));
@@ -362,7 +369,7 @@ export function createRecordingEditor(
         if (isRemoved(segment)) restore(segment); else removed.push({ start: segment.start, end: segment.end });
         setSelection(segment.start, segment.end); refresh();
       };
-      pair.addEventListener('click', toggleSegment);
+      text.addEventListener('click', toggleSegment);
       pair.addEventListener('keydown', event => {
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); toggleSegment(); }
       });
@@ -374,6 +381,10 @@ export function createRecordingEditor(
   }).catch(error => { if (!closed) { reject(error); dispose(); } });
   return {
     result, cancel, confirm,
+    playbackOffset(segmentIndex: number) {
+      const start = transcript?.segments[segmentIndex]?.start ?? 0;
+      return retainedPlaybackOffset(playbackRanges, start);
+    },
     get ready() { return Boolean(buffer && transcript); },
     snapshot: () => ({ transcript, removedRanges: removed.map(range => ({ ...range })) }),
   };
@@ -397,6 +408,7 @@ export function createFragmentEditors(
   panel.className = 'fragment-editors';
   const fragmentFlow = document.createElement('div');
   fragmentFlow.className = 'fragment-editor-flow';
+  const stopCopy = attachTranscriptCopy(fragmentFlow);
   panel.append(fragmentFlow);
   const editors = fragments.map((fragment, index) => {
     const section = document.createElement('span');
@@ -431,7 +443,7 @@ export function createFragmentEditors(
     globalPlayBar.classList.remove('playing');
   };
 
-  const toggleGlobalPlayback = async () => {
+  const toggleGlobalPlayback = async (startIndex = 0, startOffset = 0) => {
     if (isGlobalPlaying) {
       stopGlobalPlayback();
       return;
@@ -447,7 +459,7 @@ export function createFragmentEditors(
     panel.classList.add('global-playing');
     globalPlayBar.classList.add('playing');
 
-    let currentIndex = 0;
+    let currentIndex = startIndex;
     const playNext = () => {
       if (session.signal.aborted) return;
       if (!isGlobalPlaying || currentIndex >= audios.length) {
@@ -456,7 +468,7 @@ export function createFragmentEditors(
       }
       const audio = audios[currentIndex];
       currentGlobalAudio = audio;
-      audio.currentTime = 0;
+      audio.currentTime = currentIndex === startIndex ? startOffset : 0;
       audio.addEventListener('ended', () => {
         currentIndex++;
         playNext();
@@ -483,7 +495,24 @@ export function createFragmentEditors(
       element: section,
       bar: section.querySelector<HTMLElement>('.fragment-playback-bar')!,
       playing: () => section.querySelector('.recording-editor')!.classList.contains('playing'),
-    })), globalPlayBar);
+    })), globalPlayBar, (source, segment) => {
+      if (!segment || source.classList.contains('editor-segment-playback-bar')) {
+        source.click();
+        return;
+      }
+      const sections = Array.from(fragmentFlow.querySelectorAll<HTMLElement>('.fragment-editor'));
+      const index = sections.findIndex(section => section.contains(segment));
+      const pair = segment.closest<HTMLElement>('[data-segment]');
+      if (index < 0 || !pair) return;
+      const offset = editors[index].playbackOffset(Number(pair.dataset.segment));
+      if (source === globalPlayBar) {
+        void toggleGlobalPlayback(index, offset);
+      } else {
+        const audio = sections[index].querySelector<HTMLAudioElement>('audio')!;
+        if (!ownsPlayback(source) || audio.paused) audio.currentTime = offset;
+        source.click();
+      }
+    });
   const stopPainting = attachSegmentPainting(panel, segmentPainters);
   let closed = false;
   let finishRequested = false;
@@ -494,6 +523,7 @@ export function createFragmentEditors(
   }
   function cancel() {
     stopGlobalPlayback();
+    stopCopy();
     stopPainting();
     playbackLayout.dispose();
 

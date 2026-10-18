@@ -1,5 +1,8 @@
 import type { OverlayConfig, OverlayState } from './config';
 import { loadConfig, SETTINGS_STORAGE_KEY } from './config';
+import { settingsForScenarioTrigger } from './scenario-runtime';
+import { scenarioBindings } from './scenario-triggers';
+import type { ScenarioStep } from './scenario';
 import { playSound } from './audio';
 import { createFragmentEditors, cutAudio } from './recording-editor';
 import type { RecordingFragment } from './recording-editor';
@@ -19,6 +22,19 @@ import { isBrowserOverlayPreviewEnabled, listenForOverlayWidthPreview } from './
 import { isAndroid, isAndroidBubble, androidCall, bubbleInvoke } from './android-runtime';
 import { decodeAudio } from './audio-decoding';
 import { recordingPreviewFragments, retainedPreviewSegments } from './recording-transcript';
+import { showOverlaySteps } from './OverlaySteps';
+import { overlayRetention } from './overlay-retention';
+import { createControlHotkeyScope, needsControlHotkeys } from './control-hotkey-scope';
+import { publishScenarioProgress, type ScenarioProgress } from './scenario-progress';
+import { synthesizeSystemSpeech, playSpeechAudio } from './system-speech';
+import { createSpeechProvider } from './speech-providers';
+
+const executionProgress = new Map<string, ScenarioProgress['steps'][number]>();
+function reportExecutionProgress(step?: ScenarioProgress['steps'][number], active = true) {
+  if (step) executionProgress.set(step.id, step);
+  if (!active) executionProgress.clear();
+  publishScenarioProgress({ scenarioId: config.activeScenarioId, active, steps: [...executionProgress.values()] });
+}
 
 initLoggerForwarding('overlay');
 
@@ -47,9 +63,7 @@ async function initializeAndroidRuntime() {
   window.addEventListener('android-runtime-event', async event => {
     const { action, text } = (event as CustomEvent<{ action: string; text: string }>).detail;
     if (action === 'record-hotkey') {
-      if (state === 'recording') await finishRecording();
-      else if (state === 'editing') confirmPausedRecording(true);
-      else if (state === 'idle' || state === 'error') await startRecording();
+      await handleScenarioTrigger();
     } else if (action === 'pause-hotkey') {
       if (state === 'recording') await toggleRecordingPause();
       else if (state === 'editing') confirmPausedRecording(false);
@@ -87,6 +101,7 @@ if (isAndroidBubble) {
       return;
     }
     const nativeWindow = winMod.getCurrentWindow();
+    await eventMod.listen<boolean>('overlay-pin-changed', event => overlayRetention.setPinned(event.payload));
     await eventMod.listen('show-overlay-content', () => {
       container.classList.remove('overlay-content-hidden');
     });
@@ -105,6 +120,7 @@ if (isAndroidBubble) {
     try {
       await nativeWindow.hide();
     } catch (e) {}
+    await syncControlHotkeyScope();
     await overlayWindowController?.initialize(nativeWindow);
     overlayWindowInitialized = true;
     if (queuedOverlayWidthPreview !== undefined) {
@@ -112,10 +128,8 @@ if (isAndroidBubble) {
       queuedOverlayWidthPreview = undefined;
       await overlayWindowController?.previewWidth(pendingPreview);
     }
-    eventMod.listen('record-hotkey', async () => {
-      if (state === 'recording') await finishRecording();
-      else if (state === 'editing') confirmPausedRecording(true);
-      else if (state === 'idle' || state === 'error') await startRecording();
+    eventMod.listen<string | null>('record-hotkey', async event => {
+      await handleScenarioTrigger(event.payload ?? undefined);
     });
     eventMod.listen('pause-hotkey', async () => {
       if (state === 'recording') await toggleRecordingPause();
@@ -149,8 +163,17 @@ overlayWindowController = createOverlayWindowController({
   getState: () => state,
   getInvoke: () => invoke,
   settleResize: async () => { await overlayAutoSizer?.resizeNow(); },
+  isPinned: () => overlayRetention.pinned,
 });
 if (isAndroid) overlayWindowController = null;
+if (!isAndroid) {
+  overlayRetention.subscribe(pinned => {
+    overlayWindowController?.syncMonitorTracking();
+    void syncControlHotkeyScope().catch(console.warn);
+    if (invoke) void invokeCommand(invoke, 'set_overlay_pinned', { pinned }).catch(console.warn);
+  });
+  overlayRetention.onRelease(() => { if (state === 'idle') void hideCompletedOverlay(); });
+}
 if (isBrowserOverlayPreviewEnabled()) {
   container.classList.remove('overlay-content-hidden');
   listenForOverlayWidthPreview(percent => { void overlayWindowController?.previewWidth(percent); });
@@ -169,6 +192,17 @@ function setLivePreviewText(text: string, structured = false) {
 
 let state: OverlayState = 'idle';
 let config: OverlayConfig = loadConfig();
+let executionConfig: OverlayConfig | null = null;
+const loadRuntimeConfig = () => executionConfig ?? loadConfig();
+
+async function handleScenarioTrigger(scenarioId?: string) {
+  if (startingRecording) return;
+  if (state === 'idle' || state === 'error') await startRecording(scenarioId);
+  else if (!scenarioId || scenarioId === config.activeScenarioId) {
+    if (state === 'recording') await finishRecording();
+    else if (state === 'editing') confirmPausedRecording(true);
+  }
+}
 const transcriptionProvider = createGroqTranscriptionProvider(() => ({
   apiKey: config.groqApiKey,
   model: config.groqModel,
@@ -176,6 +210,13 @@ const transcriptionProvider = createGroqTranscriptionProvider(() => ({
   temperature: config.groqTemperature,
   language: config.groqLanguage,
 }));
+function transcriptionProviderForStep(step: ScenarioStep) {
+  const settings = step.transcription;
+  return settings ? createGroqTranscriptionProvider(() => ({
+    apiKey: settings.apiKey, model: settings.model, prompt: settings.prompt,
+    temperature: settings.temperature, language: settings.language,
+  })) : transcriptionProvider;
+}
 const textPostProcessor = createGeminiTextPostProcessor(() => ({
   apiKey: config.geminiApiKey,
   model: config.geminiModel,
@@ -208,7 +249,15 @@ function confirmPausedRecording(finish: boolean) {
 }
 let recordingGeneration = 0;
 let startingRecording = false;
+const setControlHotkeyScope = createControlHotkeyScope(async active => {
+  if (invoke) await invokeCommand(invoke, 'set_control_hotkeys_active', { active });
+});
+function syncControlHotkeyScope() {
+  if (!invoke || isAndroid) return Promise.resolve();
+  return setControlHotkeyScope(needsControlHotkeys(state, startingRecording, overlayRetention.pinned));
+}
 let workflowAbortController: AbortController | null = null;
+const branchLiveTranscribers = new Map<string, { step: ScenarioStep; engine: LiveTranscriber }>();
 const liveTranscriber: LiveTranscriber = createLiveTranscriber({
   getState: () => state,
   getSettings: () => config,
@@ -219,12 +268,21 @@ const liveTranscriber: LiveTranscriber = createLiveTranscriber({
     setLivePreviewText(text, true);
   },
   onError: error => console.warn('Не удалось обновить live-транскрибацию:', error),
+  onProcessing: status => {
+    if (state !== 'recording' && state !== 'editing') return;
+    const step = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps.find(item => item.type === 'transcribe');
+    if (!step) return;
+    if (status === 'idle') {
+      executionProgress.delete(step.id);
+      reportExecutionProgress();
+    } else reportExecutionProgress({ id: step.id, type: step.type, status });
+  },
 });
 
 window.addEventListener('storage', event => {
   if (event.key !== SETTINGS_STORAGE_KEY) return;
   const positionWasSaved = config.position !== null;
-  config = loadConfig();
+  config = loadRuntimeConfig();
   if (positionWasSaved && config.position === null && !invoke) {
     void overlayWindowController?.moveToCursorMonitor(true);
   }
@@ -241,18 +299,47 @@ let nativeVolumeTimer: number | null = null;
 let smoothedVolumeLevel = 0;
 function stopLiveTranscription() {
   liveTranscriber.stop();
+  branchLiveTranscribers.forEach(({ engine }) => engine.stop());
 }
 
 function suspendLiveTranscription() {
   liveTranscriber.suspend();
+  branchLiveTranscribers.forEach(({ engine }) => engine.suspend());
 }
 
 function startLiveTranscription(reset = false) {
+  if (reset) {
+    branchLiveTranscribers.forEach(({ engine }) => engine.stop());
+    branchLiveTranscribers.clear();
+    const primary = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps.find(step => step.type === 'transcribe');
+    const add = (step: ScenarioStep) => {
+      for (const lane of step.parallelBranches ?? []) {
+        const head = lane[0];
+        if (head?.type !== 'transcribe') continue;
+        const engine = createLiveTranscriber({
+          getState: () => state,
+          getSettings: () => head.transcription ?? config,
+          snapshotAudio: () => getAudioCapture().snapshot(), provider: transcriptionProviderForStep(head), cutAudio,
+          onPreview: () => {}, onError: error => console.warn('Ошибка транскрибации ветки:', error),
+          onProcessing: status => {
+            if (state !== 'recording' && state !== 'editing') return;
+            if (status === 'idle') { executionProgress.delete(head.id); reportExecutionProgress(); }
+            else reportExecutionProgress({ id: head.id, type: head.type, status });
+          },
+        });
+        branchLiveTranscribers.set(head.id, { step: head, engine });
+        add(head);
+      }
+    };
+    if (primary) add(primary);
+  }
   liveTranscriber.start(reset);
+  branchLiveTranscribers.forEach(({ engine }) => engine.start(reset));
 }
 
 function updateVolumeIndicator(rms: number) {
   liveTranscriber.observeSpeechLevel(rms);
+  branchLiveTranscribers.forEach(({ engine }) => engine.observeSpeechLevel(rms));
   const rawLevel = Math.max(0, Math.min(1, (rms - 0.004) * 82));
   smoothedVolumeLevel += (rawLevel - smoothedVolumeLevel) * (rawLevel > smoothedVolumeLevel ? 0.55 : 0.22);
   const normalized = smoothedVolumeLevel;
@@ -261,7 +348,8 @@ function updateVolumeIndicator(rms: number) {
   container.classList.toggle('audio-active', normalized > 0.04);
   waveformBars.forEach((bar, idx) => {
     const factor = 1 - Math.abs(idx - (waveformBars.length - 1) / 2) * 0.16;
-    bar.style.height = `${Math.max(3, Math.min(12, Math.round(3 + normalized * 9 * factor)))}px`;
+    const height = Math.max(3, Math.min(12, Math.round(3 + normalized * 9 * factor)));
+    bar.style.setProperty('--bar-scale', String(height / 12));
   });
 }
 
@@ -355,11 +443,11 @@ function stopVolumeAnalysis() {
   container.style.removeProperty('--volume-scale');
   container.style.removeProperty('--volume-glow');
   container.classList.remove('audio-active');
-  waveformBars.forEach((bar) => { bar.style.height = ''; });
+  waveformBars.forEach((bar) => { bar.style.removeProperty('--bar-scale'); });
 }
 
 function emitSound(event: 'start_record' | 'insert_text' | 'cancel' | 'error'): Promise<void> {
-  config = loadConfig();
+  config = loadRuntimeConfig();
   const scenario = config.scenarios.find(item => item.id === config.activeScenarioId);
   const trigger = scenario?.steps.find(step => step.type === 'startRecording');
   if (!trigger || trigger.soundEnabled === false) return Promise.resolve();
@@ -383,7 +471,7 @@ function emitSound(event: 'start_record' | 'insert_text' | 'cancel' | 'error'): 
 
 window.addEventListener('storage', event => {
   if (event.key !== SETTINGS_STORAGE_KEY && event.key !== null) return;
-  config = loadConfig();
+  config = loadRuntimeConfig();
   overlayWindowController?.scheduleMaxWidthUpdate();
 });
 
@@ -398,7 +486,7 @@ function clearErrorAutoHideTimer() {
 }
 
 // Состояния UI
-function setOverlayState(newState: OverlayState, errorMsg?: string, showMicSettings = false) {
+function setOverlayState(newState: OverlayState, errorMsg?: string, showMicSettings = false, preserveContent = false) {
   clearErrorAutoHideTimer();
   try {
     state = transitionOverlayState(state, newState);
@@ -407,6 +495,18 @@ function setOverlayState(newState: OverlayState, errorMsg?: string, showMicSetti
     return;
   }
   overlayWindowController?.syncMonitorTracking();
+  if (state === 'idle' || state === 'error') reportExecutionProgress(undefined, false);
+  void syncControlHotkeyScope().catch(console.warn);
+  if (state === 'idle') executionConfig = null;
+  else {
+    const trigger = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps.find(step => step.type === 'startRecording');
+    if (trigger) reportExecutionProgress({ id: trigger.id, type: trigger.type, status: state === 'transcribing' ? 'success' : 'running' });
+  }
+  if (preserveContent) {
+    container.classList.remove('recording', 'editing');
+    return;
+  }
+  if (state !== 'transcribing' && state !== 'error') showOverlaySteps([]);
   container.classList.remove('recording', 'has-error');
   container.classList.toggle('overlay-content-hidden', state === 'idle');
   errorBanner.classList.add('hidden');
@@ -490,18 +590,34 @@ function describeMicrophoneError(error: unknown): { message: string; showSetting
 async function completeOverlayProcess() {
   stopLiveTranscription();
   clearErrorAutoHideTimer();
+  if (!isAndroid) {
+    setOverlayState('idle', undefined, false, true);
+    if (overlayRetention.complete()) await hideCompletedOverlay();
+    return;
+  }
   setLivePreviewText('');
   setOverlayState('idle');
   if (isAndroid) await androidCall('stopRecordingService').catch(console.warn);
   await hideOverlay();
 }
+async function hideCompletedOverlay() {
+  const generation = recordingGeneration;
+  if (await hideOverlay()) {
+    if (generation !== recordingGeneration || state !== 'idle') return;
+    setLivePreviewText('');
+    setOverlayState('idle');
+  }
+}
 async function hideOverlay() {
-  if (isAndroid) { container.classList.add('overlay-content-hidden'); return; }
-  if (overlayWindowController?.previewActive) return;
+  if (isAndroid) { container.classList.add('overlay-content-hidden'); return true; }
+  if (overlayWindowController?.previewActive || overlayRetention.pinned) return false;
   if (invoke) {
     try {
-      await invokeCommand(invoke, 'hide_overlay');
-      return;
+      if (!await invokeCommand(invoke, 'hide_overlay')) {
+        overlayRetention.setPinned(true);
+        return false;
+      }
+      return true;
     } catch (error) {
       console.warn('Нативная команда скрытия оверлея не сработала:', error);
     }
@@ -510,22 +626,47 @@ async function hideOverlay() {
   if (overlayWindowController?.window) {
     try {
       await overlayWindowController.window.hide();
-      return;
+      return true;
     } catch (error) {
       console.warn('Не удалось скрыть окно оверлея:', error);
     }
   }
   container.classList.add('hidden');
+  return true;
 }
 
-async function startRecording() {
+async function startRecording(scenarioId?: string) {
   if (state === 'recording' || startingRecording) return;
 
+  const selected = settingsForScenarioTrigger(loadConfig(), scenarioId);
+  if (!selected) return;
+  overlayRetention.start();
+
+  executionProgress.clear();
+  reportExecutionProgress(undefined, false);
+  showOverlaySteps([]);
+  errorBanner.classList.add('hidden');
   startingRecording = true;
   stopLiveTranscription();
-  config = loadConfig();
+  executionConfig = config = selected;
   recordingGeneration++;
   const generation = recordingGeneration;
+  if (invoke && !isAndroid) {
+    try {
+      const shortcut = (value: string) => value.split('+').map(part =>
+        part === 'Control' ? 'Ctrl' : part === 'Meta' ? 'Super' : part.replace(/^(Key|Digit)/, '')).join('+');
+      await invokeCommand(invoke, 'set_control_hotkeys', {
+        pauseShortcut: shortcut(config.hotkeyPause || 'Control+Alt+KeyD'),
+        cancelShortcut: shortcut(config.hotkeyCancel || 'Escape'),
+      });
+      await syncControlHotkeyScope();
+    } catch (error) {
+      startingRecording = false;
+      setOverlayState('error', errorMessage(error));
+      return;
+    }
+  }
+  if (generation !== recordingGeneration) return;
   pausePending = false;
   clearErrorAutoHideTimer();
   recordedChunks = [];
@@ -672,20 +813,44 @@ async function processRecordedAudio(audioBlob: Blob, generation: number, signal:
     history: indexedDbHistoryRepository,
     transcription: transcriptionProvider,
     postProcessor: textPostProcessor,
+    transcriptionForStep: transcriptionProviderForStep,
+    postProcessorForStep: step => {
+      const settings = step.postprocessing;
+      return settings ? createGeminiTextPostProcessor(() => ({
+        apiKey: settings.apiKey, model: settings.model, instructionPrompt: settings.prompt,
+        generationConfig: settings.generationConfig,
+      })) : textPostProcessor;
+    },
     output,
     getSettings: () => config,
     fragments: recordingFragments,
+    liveTranscriptForStep: step => {
+      const engine = branchLiveTranscribers.get(step.id)?.engine;
+      return engine ? { segments: engine.segments, throughSeconds: engine.committedThroughSeconds } : undefined;
+    },
+    liveTranscript: {
+      segments: liveTranscriber.segments,
+      throughSeconds: liveTranscriber.committedThroughSeconds,
+    },
     getFragmentOffset: () => fragmentOffset,
     setFragmentOffset: offset => { fragmentOffset = offset; },
     snapshotFragments: snapshotHistoryFragments,
     decodeAudio: async blob => decodeAudio(await blob.arrayBuffer()),
     cut: cutAudio,
     onStage: stage => { statusText.textContent = stage; },
+    onSteps: steps => {
+      if (generation === recordingGeneration && !signal.aborted) showOverlaySteps(steps);
+    },
+    onStepStatus: step => {
+      if (generation === recordingGeneration && !signal.aborted) reportExecutionProgress(step);
+    },
     onText: text => {
       setLivePreviewText(text);
       if (isAndroid) void androidCall('setOutputText', {text}).catch(console.warn);
     },
     onInsertSound: () => { void emitSound('insert_text'); },
+    speech: { synthesize: synthesizeSystemSpeech, play: playSpeechAudio },
+    speechForStep: createSpeechProvider,
     signal,
   });
   if (generation !== recordingGeneration || signal.aborted || result.status === 'cancelled') return;
@@ -749,6 +914,8 @@ async function finishRecording() {
 }
 
 async function cancelScenario() {
+  overlayRetention.cancel();
+  if (invoke && !isAndroid) await invokeCommand(invoke, 'set_overlay_pinned', { pinned: false }).catch(console.warn);
   const wasActive = state !== 'idle' || startingRecording;
   recordingGeneration++;
   startingRecording = false;
@@ -784,6 +951,7 @@ async function cancelScenario() {
   recordingFragments = [];
   fragmentOffset = 0;
   if (state !== 'idle') setOverlayState('idle');
+  await syncControlHotkeyScope().catch(console.warn);
   setLivePreviewText('');
   if (wasActive) void emitSound('cancel');
   if (overlayWindowController?.previewActive) {
@@ -876,6 +1044,9 @@ async function toggleRecordingPause() {
     liveTranscriber.replaceFinalizedTranscript(retainedPreviewSegments(
       recordingPreviewFragments(recordingFragments, liveTranscriber.segments)));
     liveTranscriber.resumeAfterPause(fragmentOffset, config.liveChunkOverlapSeconds);
+    branchLiveTranscribers.forEach(({ step, engine }) => {
+      engine.resumeAfterPause(fragmentOffset, step.transcription?.liveChunkOverlapSeconds ?? config.liveChunkOverlapSeconds);
+    });
     if (finish) {
       setOverlayState('recording');
       pausePending = false;
@@ -926,8 +1097,10 @@ function matchesHotkey(e: KeyboardEvent, configuredKey: string): boolean {
 window.addEventListener('keydown', (e) => {
   // В Tauri эти клавиши обрабатываются глобально Rust-плагином.
   if (invoke) return;
-  const keys = loadConfig();
-  if (matchesHotkey(e, keys.hotkeyCancel || 'Escape')) {
+  const keys = loadRuntimeConfig();
+  const binding = scenarioBindings(loadConfig().scenarios, keys.hotkeyCancel).find(item => matchesHotkey(e, item.shortcut));
+  if (binding) { e.preventDefault(); void handleScenarioTrigger(binding.scenarioId); return; }
+  if (needsControlHotkeys(state, startingRecording, overlayRetention.pinned) && matchesHotkey(e, keys.hotkeyCancel || 'Escape')) {
     e.preventDefault();
     void cancelScenario();
     return;
@@ -938,8 +1111,8 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   const currentConfig = keys;
-  const pauseKey = currentConfig.hotkeyPause || 'Control+Digit2';
-  const resumeKey = currentConfig.hotkeyResume || 'Control+Digit2';
+  const pauseKey = currentConfig.hotkeyPause || 'Control+Alt+KeyD';
+  const resumeKey = currentConfig.hotkeyResume || 'Control+Alt+KeyD';
 
   if ((matchesHotkey(e, pauseKey) || matchesHotkey(e, resumeKey)) && state === 'recording') {
     e.preventDefault();

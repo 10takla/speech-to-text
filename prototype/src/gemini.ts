@@ -1,4 +1,4 @@
-import { DEFAULT_GEMINI_API_KEY, DEFAULT_GEMINI_MODEL } from './defaults';
+import { DEFAULT_GEMINI_MODEL } from './defaults';
 import type { GeminiGenerationSettings } from './provider-models';
 
 // Модуль пост-процессинга текста (Text-to-Text) через Google Gemini API
@@ -22,21 +22,24 @@ export async function postProcessTextWithGemini(
   const trimmed = text.trim();
   if (!trimmed) return '';
 
-  const apiKey = (options.apiKey || DEFAULT_GEMINI_API_KEY).trim();
+  const apiKey = (options.apiKey ?? '').trim();
+  if (!apiKey) throw new Error('API-ключ Gemini не указан.');
   const model = options.model || DEFAULT_GEMINI_MODEL;
+  if (!model.trim()) throw new Error('Модель Gemini не выбрана. Загрузите список моделей из API.');
   const instruction = (options.instructionPrompt || '').trim();
 
   if (!instruction) throw new Error('Для постобработки укажите промпт преобразования.');
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
   const body = {
+    systemInstruction: { parts: [{ text: instruction }] },
     contents: [
       {
         role: 'user',
         parts: [
           {
-            text: `${instruction}\n\nВходной текст:\n${trimmed}`,
+            text: trimmed,
           },
         ],
       },
@@ -51,6 +54,7 @@ export async function postProcessTextWithGemini(
     signal,
     headers: {
       'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
     },
     body: JSON.stringify(body),
   });
@@ -63,7 +67,10 @@ export async function postProcessTextWithGemini(
   const payload: unknown = await response.json();
   const candidate = getCandidateText(payload);
   if (typeof candidate !== 'string' || !candidate.trim()) {
-    return trimmed;
+    const first = isRecord(payload) && Array.isArray(payload.candidates) ? payload.candidates[0] : undefined;
+    const feedback = isRecord(payload) && isRecord(payload.promptFeedback) ? payload.promptFeedback : undefined;
+    const reason = feedback?.blockReason ?? (isRecord(first) ? first.finishReason : undefined);
+    throw new Error(`Gemini не вернул текст ответа${typeof reason === 'string' ? ` (${reason})` : ''}.`);
   }
 
   return candidate.trim();
@@ -73,8 +80,10 @@ function getCandidateText(payload: unknown): string | undefined {
   if (!isRecord(payload) || !Array.isArray(payload.candidates)) return undefined;
   const first = payload.candidates[0];
   if (!isRecord(first) || !isRecord(first.content) || !Array.isArray(first.content.parts)) return undefined;
-  const firstPart = first.content.parts[0];
-  return isRecord(firstPart) && typeof firstPart.text === 'string' ? firstPart.text : undefined;
+  return first.content.parts
+    .filter(part => isRecord(part) && part.thought !== true && typeof part.text === 'string')
+    .map(part => (part as Record<string, unknown>).text as string)
+    .join('');
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

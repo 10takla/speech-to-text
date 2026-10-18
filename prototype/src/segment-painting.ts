@@ -54,7 +54,7 @@ export function attachSegmentPainting(panel: HTMLElement, painters: WeakMap<HTML
     const touched = new Set<number>();
     for (let step = 1; step <= samples; step++) {
       const hit = document.elementFromPoint(current.lastX + dx * step / samples, current.lastY + dy * step / samples)
-        ?.closest<HTMLElement>('[data-segment]');
+        ?.closest('.editor-segment')?.closest<HTMLElement>('[data-segment]');
       if (!hit || !panel.contains(hit)) continue;
       const index = current.indexByNode.get(hit);
       if (index !== undefined) touched.add(index);
@@ -68,7 +68,7 @@ export function attachSegmentPainting(panel: HTMLElement, painters: WeakMap<HTML
     if (event.button !== 0 || session) return;
     const target = event.target as HTMLElement;
     if (target.closest('.editor-segment-playback-bar, .transcript-row-track')) return;
-    const segment = target.closest<HTMLElement>('[data-segment]');
+    const segment = target.closest('.editor-segment')?.closest<HTMLElement>('[data-segment]');
     if (!segment || !panel.contains(segment)) return;
     const nodes = Array.from(panel.querySelectorAll<HTMLElement>('[data-segment]'));
     const startIndex = nodes.indexOf(segment);

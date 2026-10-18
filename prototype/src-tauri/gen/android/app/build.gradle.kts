@@ -27,7 +27,8 @@ android {
     namespace = "com.speechtotext.app"
     testNamespace = "com.speechtotext.app.test"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // Local Piper servers use HTTP, including user-configured LAN addresses.
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "com.speechtotext.app"
         minSdk = 24
         targetSdk = 35

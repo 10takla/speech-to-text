@@ -164,7 +164,7 @@ describe('overlay position persistence', () => {
     expect(settings.position).toBeNull();
   });
 
-  async function geometrySetup() {
+  async function geometrySetup(pinned = false) {
     const settings = defaultSettings();
     settings.position = { x: 700, y: 80, centerX: 960 };
     saveSettings(settings);
@@ -186,6 +186,7 @@ describe('overlay position persistence', () => {
       getConfig: () => settings, getState: () => 'recording',
       getInvoke: () => invoke as unknown as typeof import('@tauri-apps/api/core').invoke,
       settleResize,
+      isPinned: () => pinned,
     });
     await controller.initialize(native as unknown as TauriWindow);
     return { settings, geometry, native, controller, dragHandle, invoke, settleResize };
@@ -197,6 +198,13 @@ describe('overlay position persistence', () => {
     expect(invoke).toHaveBeenCalledWith('position_overlay_on_cursor_monitor', { reset: true });
     await controller.moveToCursorMonitor();
     expect(invoke).toHaveBeenCalledWith('position_overlay_on_cursor_monitor', { reset: false });
+  });
+
+  it('does not follow the cursor to another monitor while text is being selected', async () => {
+    const { controller, invoke } = await geometrySetup(true);
+    invoke.mockClear();
+    expect(await controller.moveToCursorMonitor()).toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('ignores delayed and reordered resize/move events and restores the same center for any width', async () => {

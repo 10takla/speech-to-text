@@ -19,6 +19,7 @@ fn settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 pub fn restore(app: &AppHandle) -> Result<(), String> {
     let launched_by_autostart = std::env::args_os()
         .any(|arg| arg == std::ffi::OsStr::new("--startup"));
+    log::info!("Запуск приложения: autostart={launched_by_autostart}");
     if !launched_by_autostart {
         if let Some(window) = app.get_webview_window("main") {
             window.set_skip_taskbar(false).map_err(|e| e.to_string())?;
@@ -32,6 +33,7 @@ pub fn restore(app: &AppHandle) -> Result<(), String> {
         serde_json::from_slice::<StartupSettings>(&std::fs::read(path).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?
     } else { StartupSettings::default() };
+    log::info!("Режим автозапуска: {}", settings.startup_mode);
     if let Some(window) = app.get_webview_window("main") {
         window.set_skip_taskbar(settings.startup_mode == "tray").map_err(|e| e.to_string())?;
         match settings.startup_mode.as_str() {
@@ -40,10 +42,23 @@ pub fn restore(app: &AppHandle) -> Result<(), String> {
                 window.show().map_err(|e| e.to_string())?;
                 window.minimize().map_err(|e| e.to_string())?;
             }
-            _ => {}
+            "tray" => window.hide().map_err(|e| e.to_string())?,
+            _ => window.show().map_err(|e| e.to_string())?,
         }
     }
     Ok(())
+}
+
+fn executable_for_startup() -> Result<std::path::PathBuf, String> {
+    if cfg!(debug_assertions) {
+        // A development executable needs Vite and cannot run independently at login.
+        let portable = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../output/speech-to-text-portable.exe");
+        return portable.canonicalize().map_err(|_| {
+            "Для автозапуска сначала соберите Windows-версию приложения.".to_string()
+        });
+    }
+    std::env::current_exe().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -68,9 +83,12 @@ pub fn set_startup_settings(app: AppHandle, settings: StartupSettings) -> Result
                 return persist(&path, &settings);
             }
         } else {
-            let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+            let executable = executable_for_startup()?;
+            // canonicalize may produce a Windows extended path; Run expects a normal path.
+            let executable = executable.to_string_lossy();
+            let executable = executable.strip_prefix(r"\\?\").unwrap_or(&executable);
             command.args(["add", key, "/v", "SpeechToText", "/t", "REG_SZ", "/d"])
-                .arg(format!("\"{}\" --startup", executable.display())).arg("/f");
+                .arg(format!("\"{executable}\" --startup")).arg("/f");
         }
         let output = command.output().map_err(|e| e.to_string())?;
         if !output.status.success() { return Err("Не удалось изменить автозапуск Windows".into()); }

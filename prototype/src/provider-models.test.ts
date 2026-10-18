@@ -1,9 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchGeminiTextModels, fetchGroqSpeechModels, geminiModelParameters } from './provider-models';
+import { fetchGeminiTextModels, fetchGroqSpeechModels, geminiModelParameters, selectAvailableGeminiModel } from './provider-models';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('provider model metadata', () => {
+  it('preserves a valid saved selection and never invents an unavailable model', () => {
+    const models = [{ id: 'gemini-9.0-pro', name: 'Pro' }, { id: 'gemini-9.0-flash', name: 'Flash' }];
+    expect(selectAvailableGeminiModel(models, 'models/gemini-9.0-pro')).toBe('gemini-9.0-pro');
+    expect(selectAvailableGeminiModel(models, 'gemini-1.5-flash')).toBe('gemini-9.0-flash');
+    expect(selectAvailableGeminiModel([], 'old')).toBe('');
+  });
   it('retains Groq context sizes and excludes inactive and non-speech models', async () => {
     const fetcher = vi.fn().mockResolvedValue(Response.json({ data: [
       { id: 'whisper-large-v3', context_window: 448, active: true },
@@ -36,7 +42,8 @@ describe('provider model metadata', () => {
       { key: 'topK', label: 'Top K', min: 1, step: '1', defaultValue: 40 },
     ]);
     expect(fetcher.mock.calls[1][0]).toContain('pageToken=page2');
-    expect(fetcher.mock.calls[1][1]).toEqual({ signal });
+    expect(fetcher.mock.calls[1][1]).toEqual({ signal, headers: { 'x-goog-api-key': 'test-key' } });
+    expect(fetcher.mock.calls.every(call => !String(call[0]).includes('test-key'))).toBe(true);
   });
 
   it('does not invent settings for missing or invalid API metadata', () => {

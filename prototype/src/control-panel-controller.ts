@@ -1,12 +1,15 @@
-import { loadSettings, parseSettingsJson, saveSettings, saveSettingsPreservingOverlayPosition } from './config';
+import { resetGeneralSettings, loadSettings, parseSettingsJson, saveSettings as persistSettings, saveSettingsPreservingOverlayPosition as persistSettingsPreservingOverlayPosition } from './config';
+import { scenarioBindings } from './scenario-triggers';
+import { confirmAction } from './confirmation-dialog';
 import { isTauri } from '@tauri-apps/api/core';
 import { createHistoryView } from './history-view';
 import { invokeCommand } from './tauri-commands';
 import { errorMessage } from './error-message';
 import { mountScenarioEditor } from './scenario-editor';
+import { updateScenarioResetButtons } from './scenario-list';
 import { isBrowserOverlayPreviewEnabled, sendOverlayWidthPreview } from './browser-overlay-preview';
 import { isAndroid, androidCall } from './android-runtime';
-import { fetchGeminiTextModels, fetchGroqSpeechModels, geminiModelParameters, type ProviderModel, type GeminiGenerationSettings } from './provider-models';
+import { fetchGeminiTextModels, fetchGroqSpeechModels, geminiModelParameters, selectAvailableGeminiModel, type ProviderModel, type GeminiGenerationSettings } from './provider-models';
 import { getRecentLogs, initLoggerForwarding } from './logger';
 
 initLoggerForwarding('control-panel');
@@ -46,7 +49,20 @@ const refreshGroqModelsButton = document.getElementById('refresh-groq-models') a
 const refreshGeminiModelsButton = document.getElementById('refresh-gemini-models') as HTMLButtonElement;
 
 // Загрузка сохраненных настроек
+let saveStatusTimer: ReturnType<typeof setTimeout> | undefined;
 const settings = loadSettings();
+function saveSettings(value: typeof settings) {
+  persistSettings(value);
+  refreshScenarioResetState();
+}
+function saveSettingsPreservingOverlayPosition(value: typeof settings) {
+  persistSettingsPreservingOverlayPosition(value);
+  refreshScenarioResetState();
+}
+function refreshScenarioResetState() {
+  const root = document.getElementById('scenario-editor');
+  if (root) updateScenarioResetButtons(root, settings.scenarios);
+}
 saveSettingsPreservingOverlayPosition(settings);
 
 const startupMode = document.getElementById('startup-mode') as HTMLSelectElement;
@@ -58,6 +74,9 @@ async function syncStartupSettings() {
   if (!isTauri() || isAndroid) return;
   const { invoke } = await import('@tauri-apps/api/core');
   await invokeCommand(invoke, 'set_startup_settings', { settings: { startupMode: settings.startupMode } });
+  startupStatus.textContent = settings.startupMode
+    ? 'Автозапуск при входе в Windows включён.'
+    : 'Автозапуск выключен.';
 }
 renderStartupSettings();
 if (isAndroid) document.getElementById('startup-settings')!.hidden = true;
@@ -73,7 +92,6 @@ startupMode.addEventListener('change', async () => {
     try {
       await syncStartupSettings();
       saveSettingsPreservingOverlayPosition(settings);
-      startupStatus.textContent = '';
     } catch (error) {
       settings.startupMode = previous;
       renderStartupSettings();
@@ -82,7 +100,6 @@ startupMode.addEventListener('change', async () => {
       startupMode.disabled = !isTauri();
     }
   });
-void syncStartupSettings().catch(error => { startupStatus.textContent = errorMessage(error); });
 
 const overlayWidthField = overlayMaxWidthPercent.closest('.overlay-width-row, .form-field') as HTMLElement | null;
 
@@ -122,13 +139,13 @@ overlayWidthField?.addEventListener('mouseleave', () => { void hideOverlayWidthP
 if (providerSelect) providerSelect.value = settings.provider;
 modelSelect.value = settings.groqModel;
 apiKeyInput.value = settings.groqApiKey;
-if (groqLanguage) groqLanguage.value = settings.groqLanguage || 'ru';
+if (groqLanguage) groqLanguage.value = settings.groqLanguage || 'auto';
 if (groqTemperature) groqTemperature.value = String(settings.groqTemperature ?? 0.0);
 if (groqPrompt) groqPrompt.value = settings.groqPrompt || '';
 
 if (postProcessProvider) postProcessProvider.value = settings.postProcessProvider || 'gemini';
-if (geminiApiKey) geminiApiKey.value = settings.geminiApiKey || 'AIzaSyCmQ012V3oqvsiDj1lKHzsbCS7CgIjuqZs';
-if (geminiModel) geminiModel.value = settings.geminiModel || 'gemini-1.5-flash';
+if (geminiApiKey) geminiApiKey.value = settings.geminiApiKey;
+if (geminiModel) geminiModel.value = settings.geminiModel;
 if (geminiPrompt) geminiPrompt.value = settings.geminiPrompt || '';
 
 function autoFitInputWidth(input: HTMLInputElement, minChars = 1) {
@@ -169,9 +186,12 @@ overlayMaxWidthSlider.value = overlayMaxWidthPercent.value;
 toggleOverlayMonitorMovement.checked = settings.overlayFollowCursorMonitor;
 
 function notifySaved() {
-  saveStatus.textContent = '✓ Настройки сохранены';
+  clearTimeout(saveStatusTimer);
+  const message = '✓ Настройки сохранены';
+  saveStatus.textContent = message;
   saveStatus.style.color = '#34d399';
-  setTimeout(() => {
+  saveStatusTimer = setTimeout(() => {
+    if (saveStatus.textContent !== message) return;
     saveStatus.textContent = 'Все настройки сохраняются автоматически';
     saveStatus.style.color = 'var(--text-muted)';
   }, 1500);
@@ -384,7 +404,7 @@ async function refreshModelList(provider: 'groq' | 'gemini') {
         : 'API не вернуло модели генерации текста.');
     }
     rememberModels(provider, apiKey, models);
-    setModelOptions(select, models, isGroq ? settings.groqModel : settings.geminiModel);
+    setModelOptions(select, models, isGroq ? settings.groqModel : selectAvailableGeminiModel(models, settings.geminiModel));
     status.textContent = `Моделей: ${models.length}`;
     status.className = 'model-load-status model-load-status--success';
     updateAndSave();
@@ -407,15 +427,8 @@ function setModelOptions(select: HTMLSelectElement, models: ProviderModel[], cur
     option.textContent = model.name;
     return option;
   });
-  if (currentModel && !hasCurrent) {
-    const savedOption = document.createElement('option');
-    savedOption.value = currentModel;
-    savedOption.textContent = `${currentModel} (сохранённый выбор)`;
-    options.unshift(savedOption);
-  }
   select.replaceChildren(...options);
-  select.value = currentModel || uniqueModels[0].id;
-  if (!select.value) select.value = uniqueModels[0].id;
+  select.value = hasCurrent ? currentModel : (uniqueModels[0]?.id ?? '');
 }
 
 let lastRegisteredRecordHotkey: string | null = null;
@@ -468,13 +481,21 @@ const refreshScenarioEditor = scenarioEditorRoot
         settings.geminiPrompt = postprocessing.prompt;
         postProcessProvider.value = settings.postProcessProvider;
         geminiApiKey.value = settings.geminiApiKey;
-        geminiModel.value = settings.geminiModel;
+        const catalog = modelCatalogs.get('gemini');
+        if (catalog?.key === settings.geminiApiKey.trim()) {
+          const selected = selectAvailableGeminiModel(catalog.models, settings.geminiModel);
+          setModelOptions(geminiModel, catalog.models, selected);
+          postprocessing.model = settings.geminiModel = geminiModel.value;
+        } else {
+          geminiModel.value = settings.geminiModel;
+          if (settings.postProcessProvider === 'gemini' && settings.geminiApiKey.trim()) void refreshModelList('gemini');
+        }
         if (geminiPrompt) geminiPrompt.value = settings.geminiPrompt;
       }
       settings.autoCopyClipboard = activeScenario?.steps.some(step => step.enabled && step.type === 'copy') ?? false;
       settings.autoPasteActiveWindow = activeScenario?.steps.some(step => step.enabled && step.type === 'paste') ?? false;
       saveSettingsPreservingOverlayPosition(settings);
-      if (settings.hotkeyRecord !== lastRegisteredRecordHotkey) void syncRecordHotkey();
+      void syncRecordHotkey();
       if (`${settings.hotkeyPause}|${settings.hotkeyCancel}` !== lastRegisteredControlHotkeys) void syncControlHotkeys();
       updateProviderBlocksVisibility();
       updateProviderReadiness();
@@ -505,18 +526,29 @@ function toGlobalShortcut(configuredKey: string): string {
   }).join('+');
 }
 
+let registeringScenarioHotkeys = false;
 async function syncRecordHotkey() {
-  if (isAndroid) return;
-  if (settings.hotkeyRecord === lastRegisteredRecordHotkey) return;
-  if (!isTauri()) return;
+  if (isAndroid || !isTauri() || registeringScenarioHotkeys) return;
+  const bindings = scenarioBindings(settings.scenarios, settings.hotkeyCancel).map(binding => ({
+    ...binding, shortcut: toGlobalShortcut(binding.shortcut),
+  }));
+  const signature = JSON.stringify(bindings);
+  if (signature === lastRegisteredRecordHotkey) return;
+  registeringScenarioHotkeys = true;
   try {
     const { invoke } = await import('@tauri-apps/api/core');
-    await invokeCommand(invoke, 'set_record_hotkey', { shortcut: toGlobalShortcut(settings.hotkeyRecord) });
-    lastRegisteredRecordHotkey = settings.hotkeyRecord;
+    await invokeCommand(invoke, 'set_scenario_hotkeys', { bindings });
+    lastRegisteredRecordHotkey = signature;
   } catch (error) {
-    console.error('Не удалось зарегистрировать глобальную горячую клавишу записи:', error);
-    saveStatus.textContent = `Не удалось зарегистрировать горячую клавишу: ${String(error)}`;
+    console.error('Не удалось зарегистрировать триггеры сценариев:', error);
+    saveStatus.textContent = `Не удалось зарегистрировать триггер: ${String(error)}`;
     saveStatus.style.color = '#f87171';
+  } finally {
+    registeringScenarioHotkeys = false;
+    const latest = scenarioBindings(settings.scenarios, settings.hotkeyCancel).map(binding => ({
+      ...binding, shortcut: toGlobalShortcut(binding.shortcut),
+    }));
+    if (JSON.stringify(latest) !== signature) void syncRecordHotkey();
   }
 }
 
@@ -525,10 +557,11 @@ let lastAttemptedControlHotkeys: string | null = null;
 let registeringControlHotkeys = false;
 async function syncControlHotkeys() {
   if (isAndroid) return;
+  if (scenarioEditorRoot?.dataset.executingScenarioId) return;
   const signature = `${settings.hotkeyPause}|${settings.hotkeyCancel}`;
   if (registeringControlHotkeys || signature === lastRegisteredControlHotkeys || signature === lastAttemptedControlHotkeys) return;
   if (!isTauri()) return;
-  const pauseShortcut = toGlobalShortcut(settings.hotkeyPause || 'Control+Digit2');
+  const pauseShortcut = toGlobalShortcut(settings.hotkeyPause || 'Control+Alt+KeyD');
   const cancelShortcut = toGlobalShortcut(settings.hotkeyCancel || 'Escape');
   lastAttemptedControlHotkeys = signature;
   registeringControlHotkeys = true;
@@ -612,7 +645,7 @@ function updateAndSave() {
 
   saveSettingsPreservingOverlayPosition(settings);
   void syncOverlayMonitorMovementSetting();
-  if (settings.hotkeyRecord !== lastRegisteredRecordHotkey) void syncRecordHotkey();
+  void syncRecordHotkey();
   if (`${settings.hotkeyPause}|${settings.hotkeyCancel}` !== lastRegisteredControlHotkeys) void syncControlHotkeys();
   notifySaved();
 }
@@ -823,15 +856,15 @@ geminiPrompt?.addEventListener('input', () => {
   updateProviderReadiness();
 });
 
-// Импорт, экспорт и копирование логов
-const btnExportSettings = document.getElementById('btn-export-settings') as HTMLButtonElement;
-const btnImportSettings = document.getElementById('btn-import-settings') as HTMLButtonElement;
+// Редактор конфигурации и копирование логов
+const btnSettingsJson = document.getElementById('btn-settings-json') as HTMLButtonElement;
+const btnCopySettingsJson = document.getElementById('btn-copy-settings-json') as HTMLButtonElement;
 const btnCopyLogs = document.getElementById('btn-copy-logs') as HTMLButtonElement;
-const importSettingsPanel = document.getElementById('import-settings-panel') as HTMLElement;
-const inputImportSettings = document.getElementById('input-import-settings') as HTMLTextAreaElement;
-const btnApplyImport = document.getElementById('btn-apply-import') as HTMLButtonElement;
-const btnCancelImport = document.getElementById('btn-cancel-import') as HTMLButtonElement;
-const importSettingsStatus = document.getElementById('import-settings-status') as HTMLElement;
+const settingsJsonPanel = document.getElementById('settings-json-panel') as HTMLElement;
+const inputSettingsJson = document.getElementById('input-settings-json') as HTMLTextAreaElement;
+const btnApplySettingsJson = document.getElementById('btn-apply-settings-json') as HTMLButtonElement;
+const btnCancelSettingsJson = document.getElementById('btn-cancel-settings-json') as HTMLButtonElement;
+const settingsJsonStatus = document.getElementById('settings-json-status') as HTMLElement;
 
 async function copyText(text: string) {
   if (isTauri()) {
@@ -842,33 +875,53 @@ async function copyText(text: string) {
   await navigator.clipboard.writeText(text);
 }
 
-btnExportSettings?.addEventListener('click', async () => {
+btnSettingsJson?.addEventListener('click', () => {
+  if (!settingsJsonPanel.hidden) {
+    closeSettingsJson();
+    return;
+  }
+  inputSettingsJson.value = JSON.stringify({ ...settings, position: loadSettings().position }, null, 2);
+  settingsJsonPanel.hidden = false;
+  settingsJsonStatus.textContent = '';
+  inputSettingsJson.removeAttribute('aria-invalid');
+  btnSettingsJson.setAttribute('aria-expanded', 'true');
+  inputSettingsJson.setSelectionRange(0, 0);
+  inputSettingsJson.focus();
+  inputSettingsJson.scrollTop = 0;
+  inputSettingsJson.scrollLeft = 0;
+});
+
+function closeSettingsJson() {
+  settingsJsonPanel.hidden = true;
+  inputSettingsJson.value = '';
+  inputSettingsJson.removeAttribute('aria-invalid');
+  settingsJsonStatus.textContent = '';
+  btnSettingsJson.setAttribute('aria-expanded', 'false');
+}
+
+btnCancelSettingsJson?.addEventListener('click', () => {
+  closeSettingsJson();
+  btnSettingsJson.focus();
+});
+
+inputSettingsJson.addEventListener('input', () => {
+  settingsJsonStatus.textContent = '';
+  inputSettingsJson.removeAttribute('aria-invalid');
+});
+
+btnCopySettingsJson?.addEventListener('click', async () => {
   try {
-    settings.position = loadSettings().position;
-    await copyText(JSON.stringify(settings, null, 2));
-    saveStatus.textContent = 'Конфигурация скопирована';
-    saveStatus.style.color = '#34d399';
+    await copyText(inputSettingsJson.value);
+    settingsJsonStatus.textContent = 'Конфигурация скопирована';
+    settingsJsonStatus.style.color = '#34d399';
   } catch (error) {
-    saveStatus.textContent = `Не удалось скопировать конфигурацию: ${errorMessage(error)}`;
-    saveStatus.style.color = '#f87171';
+    settingsJsonStatus.textContent = `Не удалось скопировать: ${errorMessage(error)}`;
+    settingsJsonStatus.style.color = '#f87171';
   }
 });
 
-btnImportSettings?.addEventListener('click', () => {
-  importSettingsPanel.hidden = false;
-  importSettingsStatus.textContent = '';
-  inputImportSettings.focus();
-});
-
-btnCancelImport?.addEventListener('click', () => {
-  importSettingsPanel.hidden = true;
-  inputImportSettings.value = '';
-});
-
-btnApplyImport?.addEventListener('click', () => {
-  try {
-    const imported = parseSettingsJson(inputImportSettings.value);
-    Object.assign(settings, imported);
+function applyConfiguration(next: typeof settings) {
+    Object.assign(settings, next);
     renderStartupSettings();
     void syncStartupSettings().catch(error => { startupStatus.textContent = errorMessage(error); });
     renderedModelParameters = '';
@@ -886,7 +939,7 @@ btnApplyImport?.addEventListener('click', () => {
     geminiApiKey.value = settings.geminiApiKey;
     geminiModel.value = settings.geminiModel;
     geminiPrompt.value = settings.geminiPrompt;
-    if (groqLanguage) groqLanguage.value = settings.groqLanguage || 'ru';
+    if (groqLanguage) groqLanguage.value = settings.groqLanguage || 'auto';
     if (groqTemperature) groqTemperature.value = String(settings.groqTemperature ?? 0.0);
     if (groqPrompt) groqPrompt.value = settings.groqPrompt || '';
     toggleLiveTranscription.checked = settings.liveTranscriptionEnabled;
@@ -905,12 +958,32 @@ btnApplyImport?.addEventListener('click', () => {
     if (settings.postProcessProvider === 'gemini' && settings.geminiApiKey.trim()) void refreshModelList('gemini');
     void syncOverlayMonitorMovementSetting();
 
-    saveStatus.textContent = '✓ Настройки успешно импортированы';
+}
+
+document.getElementById('btn-reset-settings')!.addEventListener('click', async () => {
+  if (!await confirmAction({
+    title: 'Сбросить настройки?',
+    message: 'Общие настройки вернутся к значениям по умолчанию. Сценарии, история записей и аудиофайлы не изменятся.',
+    confirmLabel: 'Сбросить настройки',
+  })) return;
+  applyConfiguration(resetGeneralSettings(settings));
+  closeSettingsJson();
+  saveStatus.textContent = 'Настройки сброшены';
+  saveStatus.style.color = '#34d399';
+});
+
+btnApplySettingsJson?.addEventListener('click', () => {
+  try {
+    const imported = parseSettingsJson(inputSettingsJson.value);
+    applyConfiguration(imported);
+
+    saveStatus.textContent = '✓ Конфигурация применена';
     saveStatus.style.color = '#34d399';
-    importSettingsPanel.hidden = true;
-    inputImportSettings.value = '';
+    closeSettingsJson();
   } catch (err) {
-    importSettingsStatus.textContent = `Ошибка импорта: ${errorMessage(err)}`;
+    settingsJsonStatus.textContent = `Ошибка конфигурации: ${errorMessage(err)}`;
+    settingsJsonStatus.style.color = '#f87171';
+    inputSettingsJson.setAttribute('aria-invalid', 'true');
   }
 });
 
