@@ -1,0 +1,49 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "watch:all",
+      "type": "shell",
+      "command": "pnpm",
+      "args": [
+        "watch:all"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/prototype"
+      },
+      "problemMatcher": [],
+      "isBackground": true,
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "watch:desktop",
+      "type": "shell",
+      "command": "pnpm",
+      "args": [
+        "watch:desktop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/prototype"
+      },
+      "problemMatcher": [],
+      "isBackground": true,
+      "group": "build"
+    },
+    {
+      "label": "build:release",
+      "type": "shell",
+      "command": "pnpm",
+      "args": [
+        "build:release"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/prototype"
+      },
+      "problemMatcher": [],
+      "group": "build"
+    }
+  ]
+}

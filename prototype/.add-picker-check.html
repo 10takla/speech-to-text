@@ -1,0 +1,4 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><body><main id="flow" class="scenario-flow"></main><pre id="state"></pre><script type="module">
+import '/src/control-panel.scss';import {createDefaultScenario} from '/src/scenario.ts';import {createBrowserScenarioPreview} from '/src/browser-scenario-preview.ts';
+const scenario=createDefaultScenario();const preview=createBrowserScenarioPreview();function render(){preview(document.getElementById('flow'),scenario,render);document.getElementById('state').textContent=scenario.steps.map(s=>s.type).join(',');}render();
+</script></body></html>

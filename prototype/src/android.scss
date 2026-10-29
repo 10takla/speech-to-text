@@ -1,0 +1,77 @@
+html.android-root {
+  height: auto;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+body.android-app {
+  overflow-y: auto;
+  height: auto;
+  overflow-x: hidden;
+  min-height: 100vh;
+  background: #0b0f19 !important;
+  padding: 0;
+  font-size: 16px;
+
+  #control-panel-app { width: 100%; max-width: none; }
+  .status-pill:first-child { max-width: 100%; }
+  .cp-header .status-pill { display: none; }
+  .overlay-width-row, #btn-reset-pos, .checkbox-row:has(#toggle-overlay-monitor-movement), .scenario-cancel-controls, .scenario-trigger-options:has(input[readonly]) { display: none; }
+  .cp-card:has(#btn-reset-pos) { display: none; }
+  .scenario-toolbar { flex-wrap: nowrap; width: 100%; gap: 4px; }
+  .scenario-overlay-selector {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    select { flex: 1; min-width: 0; }
+  }
+  .scenario-card-header {
+    width: 100%;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    &::before { padding-inline-end: 0.5rem; }
+    > .scenario-card-name, > input { grid-column: 2; }
+    > .scenario-card-actions { grid-column: 3; }
+    &:has(> .scenario-duplicate-badge) {
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
+      > .scenario-duplicate-badge { grid-column: 3; }
+      > .scenario-card-actions { grid-column: 4; }
+    }
+  }
+  .scenario-toolbar .scenario-button,
+  .scenario-toolbar .scenario-rename-btn {
+    flex: 0 0 32px;
+    width: 32px;
+    min-width: 32px;
+    padding: 5px;
+  }
+  .android-record-controls .btn {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 0;
+    padding: 6px 12px;
+  }
+  .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .scenario-trigger-options { flex-wrap: wrap; }
+  .btn, select, input { min-height: 32px; }
+  .scenario-add-picker {
+    width: 32px;
+    height: 32px;
+    .scenario-add-button, select:not([hidden]) {
+      width: 32px;
+      height: 32px;
+      min-height: 32px;
+    }
+  }
+  .scenario-sequential-tools,
+  .scenario-connection--sequential .scenario-connection-tools {
+    margin-left: calc(var(--scenario-rail-center) - 16px);
+  }
+  .scenario-add-row { padding-left: calc(var(--scenario-rail-center) - 16px); }
+  .android-record-controls { display: flex; flex-wrap: wrap; gap: 6px; }
+  .android-record-controls p { width: 100%; color: #f87171; overflow-wrap: anywhere; }
+  #overlay-container { position: static !important; transform: none !important; width: 100%; }
+  #overlay-container .overlay-content { width: 100%; max-width: 100%; }
+  .overlay-content-hidden .overlay-content { display: none; }
+}

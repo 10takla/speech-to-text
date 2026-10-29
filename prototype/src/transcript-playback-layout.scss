@@ -1,0 +1,153 @@
+.transcription-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: .16em;
+  height: .65em;
+  margin-inline-start: .3em;
+  color: var(--text-main, currentColor);
+  font-size: 1.15em;
+  vertical-align: baseline;
+  user-select: none;
+  pointer-events: none;
+  &::before, > span, &::after {
+    content: '';
+    display: block;
+    width: .18em;
+    height: .18em;
+    border-radius: 50%;
+    background: currentColor;
+    animation: transcription-pending-bounce 1.2s ease-in-out infinite;
+  }
+  > span { animation-delay: .15s; }
+  &::after { animation-delay: .3s; }
+}
+@keyframes transcription-pending-bounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-.25em); }
+}
+
+.transcript-line-layout {
+  position: relative;
+  --transcript-track-height: 4px;
+  --transcript-track-gap: 4px;
+  --transcript-row-reserve: 24px;
+}
+.transcript-playback-source { display: none !important; }
+.transcript-line-layout .fragment-editor.transcript-fragment {
+  display: inline;
+  margin-right: 0;
+  padding: 0;
+  border: 0;
+}
+.transcript-line-layout .transcript-fragment .editor-segments {
+  display: inline;
+  width: auto;
+  max-height: none;
+  text-align: left;
+}
+.transcript-line-layout .transcript-fragment .editor-segments .editor-segment-pair {
+  display: inline;
+  width: auto;
+  padding: 0 1px 0 0;
+  border: 0;
+  vertical-align: baseline;
+  line-height: inherit;
+}
+.transcript-line-layout .transcript-fragment .editor-segments .editor-segment-pair:not(:last-child) {
+  position: relative;
+  &::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: var(--transcript-row-reserve);
+    border-right: 1px dashed #eab308;
+    pointer-events: none;
+  }
+}
+.transcript-line-layout .transcript-fragment .editor-segments .editor-segment {
+  display: inline;
+  width: auto;
+  white-space: normal;
+  text-align: left;
+}
+.transcript-line-layout .transcript-fragment .editor-segments .editor-segment-pair {
+  position: relative;
+  display: inline-block;
+  vertical-align: top;
+  padding-bottom: var(--transcript-row-reserve);
+}
+.transcript-line-layout .transcript-fragment .editor-segments .editor-segment-pair:not(:last-child) {
+  border-right-color: transparent;
+  &::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: -1px;
+    bottom: var(--transcript-row-reserve);
+    border-right: 1px dashed #eab308;
+    pointer-events: none;
+  }
+}
+.transcript-line-layout .transcript-fragment .editor-segments .editor-segment-pair .editor-segment-playback-bar {
+  height: var(--transcript-track-height);
+  min-height: 0;
+  margin-top: var(--transcript-track-gap);
+}
+.transcript-line-layout .fragment-editor:not(:last-of-type) .editor-segment-pair:last-child {
+  &::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: calc(var(--transcript-row-reserve) - var(--transcript-track-height) - var(--transcript-track-gap));
+    border-right: 2px dashed rgba(255, 255, 255, .35);
+    pointer-events: none;
+  }
+}
+.transcript-row-tracks { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.transcript-row-track-stack {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  row-gap: var(--transcript-track-gap);
+  pointer-events: none;
+}
+.transcript-row-track-level {
+  position: relative;
+  flex: 0 0 var(--transcript-track-height);
+  width: 100%;
+  height: var(--transcript-track-height);
+  pointer-events: none;
+}
+.transcript-row-track {
+  position: absolute;
+  top: 0;
+  display: block;
+  height: var(--transcript-track-height);
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  opacity: .85;
+  background-color: #ef4444;
+  cursor: pointer;
+  pointer-events: auto;
+  &.transcript-row-track-all { background-color: #dc2626; opacity: .9; }
+  &.playing { background-color: #10b981; box-shadow: 0 0 4px #10b981; }
+  &:disabled { background-color: #501313; opacity: .35; cursor: default; }
+  &.all-segments-deleted { background-color: #dc2626; opacity: 1; box-shadow: 0 0 4px rgba(239, 68, 68, .65); }
+  &.transcript-row-track-segment:hover:not(:disabled) { filter: brightness(1.2); }
+  &:focus-visible { outline: 1px solid #fff; outline-offset: 1px; }
+}
+.transcript-track-preview {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  border-radius: inherit;
+  background-color: #60a5fa;
+  box-shadow: 0 0 3px rgba(96, 165, 250, .65);
+  pointer-events: none;
+}
+

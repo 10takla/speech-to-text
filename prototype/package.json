@@ -1,0 +1,35 @@
+{
+  "name": "prototype",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "android:watch": "node --watch --watch-preserve-output scripts/android-watch.mjs",
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "build:release:windows": "tauri build --no-bundle --target x86_64-pc-windows-msvc && node -e \"const fs=require('node:fs');fs.mkdirSync('output',{recursive:true});fs.copyFileSync('src-tauri/target/x86_64-pc-windows-msvc/release/app.exe','output/speech-to-text-portable.exe')\"",
+    "build:release:android": "node scripts/android-release.mjs && node -e \"const fs=require('node:fs'),path=require('node:path'),root='src-tauri/gen/android/app/build/outputs/apk',walk=dir=>fs.readdirSync(dir,{withFileTypes:true}).flatMap(entry=>entry.isDirectory()?walk(path.join(dir,entry.name)):[path.join(dir,entry.name)]),files=walk(root).filter(file=>file.endsWith('.apk')&&file.split(path.sep).includes('release'));if(!files.length)throw Error('Android release APK not found');fs.mkdirSync('output',{recursive:true});for(const file of files)fs.copyFileSync(file,path.join('output',path.basename(file)))\"",
+    "build:release": "concurrently --kill-others-on-fail --names windows,android \"pnpm run build:release:windows\" \"pnpm run build:release:android\"",
+    "test": "vitest run src && node --test scripts/android-device-state.test.mjs scripts/dev-environment.test.mjs",
+    "watch:desktop": "node scripts/desktop-watch.mjs",
+    "watch:all": "concurrently --kill-others --names desktop,android \"node scripts/desktop-watch.mjs\" \"node --watch --watch-preserve-output scripts/android-watch.mjs\""
+  },
+  "devDependencies": {
+    "@tauri-apps/api": "^2.12.1",
+    "@tauri-apps/cli": "^2.12.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "concurrently": "^10.0.6",
+    "happy-dom": "^21.0.3",
+    "sass-embedded": "^1.105.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.3"
+  },
+  "dependencies": {
+    "@tauri-apps/plugin-log": "^2.10.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  }
+}

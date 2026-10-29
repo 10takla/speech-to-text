@@ -1,0 +1,21 @@
+# Logs
+logs/
+*.log
+
+# Dependencies & Build
+node_modules/
+dist/
+target/
+
+# Local API keys
+.env
+.env.*
+
+# Editor & OS
+.vscode/*
+!.vscode/extensions.json
+!.vscode/tasks.json
+.idea/
+.DS_Store
+*.suo
+*.user

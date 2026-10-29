@@ -1,0 +1,93 @@
+// Controls of a streamed or saved speech (SpeechControls): the overlay and the history.
+
+.speech-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+
+  .btn {
+    flex: 0 0 auto;
+    height: 20px;
+    min-width: 24px;
+    padding: 0 4px;
+    font-size: 0.7rem;
+    line-height: 1;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .speech-rate-stepper {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    border-radius: 4px;
+    box-sizing: border-box;
+    user-select: none;
+    overflow: hidden;
+
+    .speech-rate-value {
+      font-size: 0.7rem;
+      padding: 0 4px;
+      min-width: 28px;
+      text-align: center;
+      color: var(--text-main, #f8fafc);
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+    }
+
+    .speech-rate-buttons {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+      width: 13px;
+      border-left: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .speech-rate-btn {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      padding: 0;
+      margin: 0;
+      color: var(--text-muted, #94a3b8);
+      cursor: pointer;
+      line-height: 1;
+      transition: background 0.1s, color 0.1s;
+
+      &:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.15);
+        color: #fff;
+      }
+
+      &:active:not(:disabled) {
+        background: rgba(255, 255, 255, 0.25);
+      }
+
+      &:disabled {
+        opacity: 0.25;
+        cursor: default;
+      }
+
+      &--up {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+    }
+  }
+
+  .speech-rate {
+    font-size: 0.7rem;
+    height: 20px;
+    padding: 0 2px;
+  }
+  .speech-time { font-size: 0.65rem; color: var(--text-muted, #94a3b8); font-variant-numeric: tabular-nums; }
+}

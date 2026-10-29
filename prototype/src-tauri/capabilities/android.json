@@ -1,0 +1,6 @@
+{
+  "identifier": "android",
+  "platforms": ["android"],
+  "windows": ["main"],
+  "permissions": ["core:default", "log:default"]
+}

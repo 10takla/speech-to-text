@@ -1,0 +1,43 @@
+// Text of a spoken step (SpeechText): marks, tracks, highlights.
+// Used by the overlay and by the history.
+
+// The spoken word and the word under the cursor (CSS Custom Highlight API: no DOM around the text).
+::highlight(speech-current) { background-color: rgba(52, 211, 153, 0.4); color: #fff; }
+::highlight(speech-hover) { background-color: rgba(148, 163, 184, 0.25); }
+
+// The line height is set from the start, so the text does not change its height when the tracks appear.
+.overlay-step-text--speech { line-height: 1.95; }
+
+// Tracks under the text: drawn above it (SpeechText), so a selection does not tint them.
+.speech-text { position: relative; }
+
+.speech-bars { position: absolute; inset: 0; overflow: hidden; z-index: 1; pointer-events: none; user-select: none; -webkit-user-select: none; }
+
+.speech-bar {
+  position: absolute;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(148, 163, 184, 0.45);
+  pointer-events: auto;
+  cursor: pointer;
+
+  &--current { background: rgba(148, 163, 184, 0.7); }
+  // The track can be clicked: it thickens under the cursor.
+  &:hover { height: 6px; margin-top: -1px; }
+
+  .speech-bar-fill { height: 100%; border-radius: inherit; background: #10b981; }
+
+  // Where the loaded tracks end, the next one is still to come: a small light.
+  &--next {
+    width: 22px;
+    pointer-events: none;
+    cursor: default;
+    background: linear-gradient(90deg, rgba(148, 163, 184, 0.15) 0%, rgba(203, 213, 225, 0.65) 50%, rgba(148, 163, 184, 0.15) 100%) 0 0 / 200% 100%;
+    animation: speech-track-loading 1s linear infinite;
+  }
+  &--current .speech-bar-fill { background: #34d399; }
+}
+
+@keyframes speech-track-loading {
+  to { background-position: -200% 100%; }
+}
