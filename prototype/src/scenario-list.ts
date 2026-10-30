@@ -174,7 +174,7 @@ export function createScenarioList() {
         // Measure headers alone: expanded settings and the tree never affect their columns.
         const measure = header.cloneNode(true) as HTMLElement;
         measure.setAttribute('aria-hidden', 'true');
-        measure.style.cssText = 'position:fixed;left:-10000px;visibility:hidden;width:max-content;max-width:none;pointer-events:none';
+        measure.style.cssText = 'position:fixed;left:-10000px;visibility:hidden;width:max-content;min-width:0;max-width:none;pointer-events:none';
         measure.querySelector<HTMLElement>('.scenario-card-name')!.hidden = false;
         measure.querySelector<HTMLInputElement>('input[type="text"]')!.hidden = true;
         measure.querySelector('.scenario-trigger-error')?.remove();

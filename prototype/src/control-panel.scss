@@ -860,7 +860,8 @@ body:not(.android-app) .cp-settings-content { max-width: var(--column-min-width)
 .scenario-card-header {
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
-  width: var(--scenario-header-width, max-content);
+  width: max-content;
+  min-width: min(var(--scenario-header-width, 0px), 100%);
   max-width: 100%;
   align-items: center;
   gap: 0.65rem;
