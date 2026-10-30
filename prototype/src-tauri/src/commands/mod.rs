@@ -17,6 +17,8 @@ mod clipboard_history;
 mod hotkeys;
 mod logs;
 mod speech;
+mod speech_media;
+pub use speech_media::{set_speech_media_state, SpeechMediaState};
 mod piper;
 mod edge_speech;
 pub use edge_speech::{edge_speech_voices, edge_speech_stream, edge_speech_prepare, cancel_edge_speech};

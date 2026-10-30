@@ -17,7 +17,7 @@ pub use crate::commands::{
     start_claude_dictation, stop_claude_dictation, poll_claude_dictation, prepare_claude_code,
     save_recording_file,
     piper_http,
-    synthesize_system_speech, system_speech_capabilities,
+    synthesize_system_speech, system_speech_capabilities, set_speech_media_state, SpeechMediaState,
     edge_speech_voices, edge_speech_stream, edge_speech_prepare, cancel_edge_speech,
     begin_scenario_output, cancel_scenario_output, finish_scenario_output, get_selected_text,
     cancel_audio_recording, copy_text_to_clipboard, write_clipboard_text, get_app_logs, hide_overlay, set_overlay_pinned, is_overlay_dragging, open_microphone_settings,
@@ -75,6 +75,7 @@ pub fn run() {
         .manage(RecordHotkeyState::default())
         .manage(ScenarioHotkeyState::default())
         .manage(ControlHotkeyState::default())
+        .manage(SpeechMediaState::default())
         .manage(PasteTargetState::default())
         .manage(audio_capture::AudioCaptureState::new())
         .plugin(
@@ -137,6 +138,7 @@ pub fn run() {
             piper_http,
             synthesize_system_speech,
             system_speech_capabilities,
+            set_speech_media_state,
             edge_speech_voices, edge_speech_stream, edge_speech_prepare, cancel_edge_speech,
             crate::startup::set_startup_settings,
             position_overlay_on_cursor_monitor,

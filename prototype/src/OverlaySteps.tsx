@@ -1,5 +1,6 @@
 import SpeechControls from './SpeechControls';
 import SpeechText from './SpeechText';
+import OverlayTextResizeHandle from './OverlayTextResizeHandle';
 
 export interface OverlayStepStatus {
   id: string;
@@ -46,7 +47,7 @@ export default function OverlaySteps({ steps }: { steps: readonly OverlayStepSta
       </span>
       </header>
       {step.speech && (step.status === 'running' || step.status === 'success') && <div className="overlay-step-controls"><SpeechControls /></div>}
-      {(step.body?.trim() || (step.status === 'error' && step.error)) && <div className="overlay-step-body" onMouseDown={event => event.stopPropagation()}
+      {(step.body?.trim() || (step.status === 'error' && step.error)) && <div className={`overlay-step-body${step.speech ? ' overlay-step-body--speech' : ''}`} onMouseDown={event => event.stopPropagation()}
         // The text follows the voice until the user scrolls it by hand: then it stays where they put it.
         onWheel={event => { event.currentTarget.dataset.userScrolled = 'true'; }}
         onPointerDown={event => {
@@ -64,6 +65,7 @@ export default function OverlaySteps({ steps }: { steps: readonly OverlayStepSta
         onPointerUp={event => { event.currentTarget.style.width = ''; }}>
         {step.body?.trim() && <div className={`overlay-step-text${step.speech ? ' overlay-step-text--speech' : ''}`}>{step.speech && (step.status === 'running' || step.status === 'success') ? <SpeechText body={step.body} /> : step.body}</div>}
         {step.status === 'error' && step.error && <div className="overlay-step-error">{step.error}</div>}
+        {step.speech && <OverlayTextResizeHandle />}
       </div>}
     </section>)}
   </div>;

@@ -292,6 +292,23 @@ body {
   overscroll-behavior: contain;
 }
 
+.overlay-step-body--speech { resize: none; scrollbar-gutter: stable; }
+.overlay-text-resize-handle {
+  position: sticky;
+  bottom: -3px;
+  display: block;
+  width: 100%;
+  height: 10px;
+  margin-bottom: -3px;
+  cursor: ns-resize;
+  touch-action: none;
+  user-select: none;
+  background: #24272d;
+  border-top: 1px solid rgba(148, 163, 184, .4);
+  z-index: 2;
+  &:hover, &:focus-visible { background: #334155; border-color: #93c5fd; outline: none; }
+}
+
 .overlay-content--steps {
   > .overlay-header { border-bottom: 0; border-radius: inherit; }
   > .overlay-body > .transcription-preview { display: none; }

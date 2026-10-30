@@ -1,6 +1,7 @@
 import type { invoke as TauriInvoke } from '@tauri-apps/api/core';
 
 type CommandContract = {
+  set_speech_media_state: { args: { state: 'none' | 'paused' | 'playing' }; result: void };
   open_claude_code: { args: undefined; result: void };
   cancel_claude_code: { args: { runId: string } | undefined; result: void };
   start_claude_dictation: { args: { runId: string }; result: void };

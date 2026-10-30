@@ -1,4 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { isTauri } from '@tauri-apps/api/core';
+import { connectNativeSpeechMedia } from './speech-native-media';
 
 // The speech that plays while it streams in (MP3: Edge, ElevenLabs). The overlay
 // controls it locally: the service only sends audio, everything received stays
@@ -12,19 +14,24 @@ let marks: readonly SpeechMark[] = [];
 // The service is still sending the audio (until the last chunk has arrived).
 let streaming = false;
 let activeCleanup: (() => void) | undefined;
+let mediaCleanup: (() => void) | undefined;
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach(listener => listener());
 
 export function setActiveSpeech(audio: HTMLAudioElement | undefined, cleanup?: () => void): void {
   if (active === audio) return;
+  mediaCleanup?.();
   activeCleanup?.();
   active = audio;
   activeCleanup = cleanup;
+  mediaCleanup = audio ? connectMediaControls(audio) : undefined;
   notify();
 }
 
 export function clearActiveSpeech(audio?: HTMLAudioElement): void {
   if (!audio || active === audio) {
+    mediaCleanup?.();
+    mediaCleanup = undefined;
     activeCleanup?.();
     activeCleanup = undefined;
     active = undefined;
@@ -32,6 +39,32 @@ export function clearActiveSpeech(audio?: HTMLAudioElement): void {
     streaming = false;
     notify();
   }
+}
+
+function connectMediaControls(audio: HTMLAudioElement): (() => void) | undefined {
+  const play = () => { if (audio.paused || audio.ended) togglePause(audio); };
+  const pause = () => { audio.dataset.userPaused = 'true'; audio.pause(); };
+  // WebView2 withdraws its automatic Windows session once the audio has ended.
+  // Own the native session until this retained speech is explicitly cleared.
+  if (isTauri() && typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent)) {
+    return connectNativeSpeechMedia(audio, { play, pause, stop: pause });
+  }
+  if (typeof navigator === 'undefined' || !navigator.mediaSession) return;
+  const session = navigator.mediaSession;
+  const update = () => { session.playbackState = audio.paused || audio.ended ? 'paused' : 'playing'; };
+  const installed: MediaSessionAction[] = [];
+  for (const [action, handler] of [['play', play], ['pause', pause], ['stop', pause]] as const) {
+    try { session.setActionHandler(action, handler); installed.push(action); }
+    catch { /* Some platforms do not support every media action. */ }
+  }
+  const events = ['play', 'pause', 'ended'];
+  events.forEach(event => audio.addEventListener(event, update));
+  update();
+  return () => {
+    events.forEach(event => audio.removeEventListener(event, update));
+    installed.forEach(action => session.setActionHandler(action, null));
+    session.playbackState = 'none';
+  };
 }
 
 /** The marks arrive with the audio; a new speech starts with none. */
