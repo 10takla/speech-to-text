@@ -33,7 +33,7 @@ export function initializeOverlayHost() {
   const autoSizer = enableWindowAutoSizing('overlay-container', {
     nativeResizeCommand: 'resize_overlay_to_content', resizeDelayMs: 16,
     keepCenterOnResize: () => windowController?.preserveCenterOnResize ?? false,
-    onResizeSettled: () => { windowController?.finishPreviewResize(); void windowController?.keepWithinMonitor(); },
+    onResizeSettled: () => { windowController?.finishPreviewResize(); },
   });
   const windowController = isAndroid ? null : createOverlayWindowController({
     container, dragHandle: container, skeletonPreview: skeleton,

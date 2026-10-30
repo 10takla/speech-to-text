@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { defaultSettings } from '../config';
+import { defaultSettings, saveSettings, SETTINGS_STORAGE_KEY } from '../config';
 import { createDefaultScenario, createStep } from '../scenario';
 import { createOverlayRunView } from './OverlayRun';
 import { createRecordingSession } from './recording-session';
@@ -21,6 +21,7 @@ const disposals: (() => void)[] = [];
 const workflows: { audio: Blob; dependencies: Parameters<typeof runRecordingWorkflow>[1]; finish(result: RecordingWorkflowResult): void }[] = [];
 beforeEach(() => {
   vi.useFakeTimers();
+  localStorage.clear();
   document.body.innerHTML = '<div id="overlay-runs"></div>';
   workflows.length = 0;
   vi.mocked(runRecordingWorkflow).mockImplementation((audio, dependencies) => new Promise(resolve => {
@@ -98,6 +99,70 @@ it('cancels Claude recording without invoking the text workflow or ordinary capt
   expect(item.capture.stop).not.toHaveBeenCalled();
   // The level-only capture is released with the dictation.
   expect(item.capture.cancel).toHaveBeenCalled();
+});
+
+function setClaudeLive(item: ReturnType<typeof fixture>, live: boolean) {
+  const saved = structuredClone(item.settings);
+  saved.scenarios[0].steps[0].liveTranscription = live;
+  saveSettings(saved);
+  window.dispatchEvent(new StorageEvent('storage', { key: SETTINGS_STORAGE_KEY }));
+}
+
+it('reactively hides and restores Claude live text without changing the run snapshot', async () => {
+  const item = fixture('claude-reactive');
+  item.settings.scenarios[0].steps.splice(0, 2, createStep('claudeCode'));
+  let text = 'Первый текст';
+  item.invoke.mockImplementation(async (command, ...args) => command === 'poll_claude_dictation'
+    ? { finished: false, text: (args[0] as { live: boolean }).live ? text : null } : undefined);
+  const previews: string[] = [];
+  item.view.addEventListener('overlay-transcription-preview', event => previews.push((event as CustomEvent<{ text: string }>).detail.text));
+  await start(item.session); await vi.advanceTimersByTimeAsync(250);
+  expect(previews.at(-1)).toBe('Первый текст');
+  setClaudeLive(item, false);
+  expect(item.view.querySelector('[data-role=live-preview]')!.classList.contains('hidden')).toBe(true);
+  await vi.advanceTimersByTimeAsync(500);
+  expect(previews.at(-1)).toBe('');
+  expect(item.invoke).toHaveBeenLastCalledWith('poll_claude_dictation', { runId: 'claude-reactive', live: false });
+  setClaudeLive(item, true);
+  expect(previews.at(-1)).toBe('Первый текст');
+  text = 'Новый текст';
+  await vi.advanceTimersByTimeAsync(250);
+  expect(previews.at(-1)).toBe('Новый текст');
+  expect(item.settings.scenarios[0].steps[0].liveTranscription).not.toBe(false);
+  await item.session.cancel();
+});
+
+it('keeps a late Claude poll response hidden after live text is switched off', async () => {
+  const item = fixture('claude-late-live');
+  item.settings.scenarios[0].steps.splice(0, 2, createStep('claudeCode'));
+  let finishPoll!: (result: { finished: boolean; text: string }) => void;
+  item.invoke.mockImplementation(async command => command === 'poll_claude_dictation'
+    ? new Promise(resolve => { finishPoll = resolve; }) : undefined);
+  const previews: string[] = [];
+  item.view.addEventListener('overlay-transcription-preview', event => previews.push((event as CustomEvent<{ text: string }>).detail.text));
+  await start(item.session); await vi.advanceTimersByTimeAsync(250);
+  setClaudeLive(item, false);
+  finishPoll({ finished: false, text: 'Запоздалый текст' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(previews.at(-1)).toBe('');
+  expect(item.view.querySelector('[data-role=live-preview]')!.classList.contains('hidden')).toBe(true);
+  await item.session.cancel();
+});
+
+it('enables live text during a Claude recording started with the flag off', async () => {
+  const item = fixture('claude-enable-live');
+  const trigger = createStep('claudeCode'); trigger.liveTranscription = false;
+  item.settings.scenarios[0].steps.splice(0, 2, trigger);
+  item.invoke.mockImplementation(async (command, ...args) => command === 'poll_claude_dictation'
+    ? { finished: false, text: (args[0] as { live: boolean }).live ? 'Текст после включения' : null } : undefined);
+  const previews: string[] = [];
+  item.view.addEventListener('overlay-transcription-preview', event => previews.push((event as CustomEvent<{ text: string }>).detail.text));
+  await start(item.session); await vi.advanceTimersByTimeAsync(250);
+  expect(previews.at(-1)).toBe('');
+  setClaudeLive(item, true);
+  await vi.advanceTimersByTimeAsync(250);
+  expect(previews.at(-1)).toBe('Текст после включения');
+  await item.session.cancel();
 });
 async function start(session: ReturnType<typeof fixture>['session']) {
   const starting = session.start(); await vi.advanceTimersByTimeAsync(250); await starting;

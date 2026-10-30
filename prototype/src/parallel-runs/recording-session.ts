@@ -89,9 +89,12 @@ export function createRecordingSession(host: SessionHost) {
   let editingPreviewPending = false;
   function setLivePreviewText(text: string, structured = false) {
     lastPreviewText = text;
-    const fragments = structured ? recordingPreviewFragments(recordingFragments, liveTranscriber.segments) : [];
-    previewHasContent = fragments.length > 0 || !!text.trim() || livePreviewProcessing;
-    container.dispatchEvent(new CustomEvent('overlay-transcription-preview', { detail: { text, fragments, processing: livePreviewProcessing } }));
+    const hidden = usesClaude() && state === 'recording' && !claudeLivePreviewEnabled();
+    const visibleText = hidden ? '' : text;
+    const fragments = !hidden && structured ? recordingPreviewFragments(recordingFragments, liveTranscriber.segments) : [];
+    const processing = !hidden && livePreviewProcessing;
+    previewHasContent = fragments.length > 0 || !!visibleText.trim() || processing;
+    container.dispatchEvent(new CustomEvent('overlay-transcription-preview', { detail: { text: visibleText, fragments, processing } }));
     livePreview.classList.toggle('hidden', (state === 'editing' && !editingPreviewPending) || !previewHasContent);
 
   }
@@ -147,6 +150,11 @@ export function createRecordingSession(host: SessionHost) {
   let recordedChunks: Blob[] = [];
   let nativeRecording = false;
   const usesClaude = () => config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0]?.type === 'claudeCode';
+  const claudeLivePreviewEnabled = () => {
+    const trigger = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0];
+    // Display flags are reactive; the recording's other settings remain a snapshot.
+    return (textFlagSteps.find(step => step.id === trigger?.id) ?? trigger)?.liveTranscription !== false;
+  };
   // The scenario starts from the text selected in another application, without recording.
   const usesSelection = () => config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0]?.type === 'selectedText';
   let claudeRecording = false;
@@ -227,7 +235,8 @@ export function createRecordingSession(host: SessionHost) {
       void overlayWindowController?.moveToCursorMonitor(true);
     }
     overlayWindowController?.syncMonitorTracking();
-    setLivePreviewText(liveTranscriber.text, true);
+    if (usesClaude()) setLivePreviewText(lastPreviewText);
+    else setLivePreviewText(liveTranscriber.text, true);
   });
 
   // Измерение громкости микрофона в реальном времени
@@ -675,10 +684,10 @@ export function createRecordingSession(host: SessionHost) {
         void capture.then(started => {
           if (started && claudeMeter && claudeRecording && generation === recordingGeneration) startNativeVolumeAnalysis();
         });
-        const live = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0]?.liveTranscription !== false;
         claudePoll = setInterval(() => {
           if (claudePolling || !claudeRecording || state !== 'recording' || !invoke) return;
           claudePolling = true;
+          const live = claudeLivePreviewEnabled();
           void invokeCommand(invoke, 'poll_claude_dictation', { runId: host.runId, live }).then(({ finished, text }) => {
             if (generation !== recordingGeneration || state !== 'recording') return;
             // Claude's interim transcript; the final text still arrives through its hook.

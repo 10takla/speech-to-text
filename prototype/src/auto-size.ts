@@ -38,38 +38,44 @@ export function enableWindowAutoSizing(
     }
     running = true;
     try {
-      const rect = target!.getBoundingClientRect();
-      const width = Math.ceil(rect.width + (options.extraWidth || 0));
-      const height = Math.ceil(rect.height + (options.extraHeight || 0));
-      if (!width || !height || (Math.abs(width - lastW) < 2 && Math.abs(height - lastH) < 2)) return;
-      if (options.nativeResizeCommand) {
-        const { invoke } = await import('@tauri-apps/api/core');
-        await invokeCommand(invoke, options.nativeResizeCommand, {
-          width,
-          height,
-          keepCenter: options.keepCenterOnResize?.() ?? false,
-        });
-      } else {
-        const [{ getCurrentWindow }, { LogicalSize }] = await Promise.all([
-          import('@tauri-apps/api/window'), import('@tauri-apps/api/dpi'),
-        ]);
-        await getCurrentWindow().setSize(new LogicalSize(width, height));
-      }
-      // Запоминаем размер только после успешного изменения нативного окна.
-      lastW = width; lastH = height;
-    } catch (error) {
-      if ('__TAURI_INTERNALS__' in window) console.warn('Не удалось подстроить размер окна:', error);
+      do {
+        pending = false;
+        try {
+          const rect = target!.getBoundingClientRect();
+          const width = Math.ceil(rect.width + (options.extraWidth || 0));
+          const height = Math.ceil(rect.height + (options.extraHeight || 0));
+          if (!width || !height || (Math.abs(width - lastW) < 2 && Math.abs(height - lastH) < 2)) continue;
+          if (options.nativeResizeCommand) {
+            const { invoke } = await import('@tauri-apps/api/core');
+            await invokeCommand(invoke, options.nativeResizeCommand, {
+              width,
+              height,
+              keepCenter: options.keepCenterOnResize?.() ?? false,
+            });
+          } else {
+            const [{ getCurrentWindow }, { LogicalSize }] = await Promise.all([
+              import('@tauri-apps/api/window'), import('@tauri-apps/api/dpi'),
+            ]);
+            await getCurrentWindow().setSize(new LogicalSize(width, height));
+          }
+          // Запоминаем размер только после успешного изменения нативного окна.
+          lastW = width; lastH = height;
+        } catch (error) {
+          if ('__TAURI_INTERNALS__' in window) console.warn('Не удалось подстроить размер окна:', error);
+        }
+        // A slow native call must catch up directly to the newest size, without
+        // another delay or a queue of obsolete intermediate sizes.
+      } while (pending);
     } finally {
       running = false;
-      if (pending) { pending = false; schedule(); }
-      else {
-        options.onResizeSettled?.();
-        settleWaiters.splice(0).forEach(resolve => resolve());
-      }
+      options.onResizeSettled?.();
+      settleWaiters.splice(0).forEach(resolve => resolve());
     }
   }
   function schedule() {
-    if (timer) clearTimeout(timer);
+    if (running) { pending = true; return; }
+    // Throttle instead of debounce: continuous movement must not postpone resize.
+    if (timer !== null) return;
     timer = setTimeout(() => { timer = null; void adjust(); }, options.resizeDelayMs ?? 30);
   }
   const observer = new ResizeObserver(schedule);

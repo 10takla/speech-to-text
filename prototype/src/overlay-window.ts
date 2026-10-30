@@ -374,7 +374,11 @@ export function createOverlayWindowController(dependencies: OverlayWindowDepende
       }
     }
     await updateMaxWidth();
-    await nativeWindow.onResized(() => { void keepWithinMonitor(); });
+    await nativeWindow.onResized(() => {
+      // resize_overlay_to_content already clamps normal resizes natively.
+      // Only width previews need their separate fixed anchor restored here.
+      if (widthPreviewActive || widthPreviewFinishing) void keepWithinMonitor();
+    });
     try {
       await nativeWindow.onMoved(() => {
         // Событие также приходит после resize, восстановления и смены монитора.

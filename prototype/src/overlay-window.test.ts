@@ -288,6 +288,17 @@ describe('overlay position persistence', () => {
     }
   });
 
+  it('does not repeat native bounds queries after an ordinary content resize', async () => {
+    const { native } = await geometrySetup();
+    const position = vi.spyOn(native, 'outerPosition');
+    const size = vi.spyOn(native, 'outerSize');
+    const resized = native.onResized.mock.calls[0][0] as unknown as () => void;
+    resized();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(position).not.toHaveBeenCalled();
+    expect(size).not.toHaveBeenCalled();
+  });
+
   it('saves only after the native mouse button is released and resize has settled', async () => {
     const { geometry, controller, dragHandle, invoke, settleResize } = await geometrySetup();
     const initial = loadSettings().position;
