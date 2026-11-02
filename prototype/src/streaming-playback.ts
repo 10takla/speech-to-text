@@ -1,6 +1,6 @@
 import { observeRecordingResource } from './parallel-runs/runtime';
 import { playAudioElement } from './system-speech';
-import { addSpeechMark, clearActiveSpeech, finishSpeechLoading, resetSpeechMarks, setActiveSpeech, type SpeechMark } from './speech-playback-control';
+import { addSpeechMark, clearActiveSpeech, finishSpeechLoading, isOtherSpeechPlaying, resetSpeechMarks, setActiveSpeech, type SpeechMark, type SpeechScope } from './speech-playback-control';
 
 // Plays speech while it streams in: MP3 (Edge, ElevenLabs) through MediaSource,
 // raw 16-bit PCM (Gemini) through Web Audio. Pauses while a recording runs.
@@ -15,7 +15,7 @@ export const canStreamMp3 = () => typeof MediaSource !== 'undefined' && MediaSou
 
 interface Player { push(chunk: Uint8Array): void; end(): Promise<void>; stop(): void }
 
-function mp3Player(volume: number, signal?: AbortSignal): Player {
+function mp3Player(volume: number, signal?: AbortSignal, scope?: SpeechScope): Player {
   const source = new MediaSource();
   const url = URL.createObjectURL(source);
   const stop = new AbortController();
@@ -49,7 +49,9 @@ function mp3Player(volume: number, signal?: AbortSignal): Player {
       pending.push(chunk);
       if (!playback) {
         // The overlay controls this element: pause, ±5 s, speed.
-        setActiveSpeech(audio, cleanup);
+        setActiveSpeech(audio, cleanup, scope);
+        // Another speech is playing: this one waits ready and starts when the user plays it.
+        if (isOtherSpeechPlaying(scope)) audio.dataset.userPaused = 'true';
         playback = playAudioElement(audio, playbackSignal, volume);
       }
       pump();
@@ -58,7 +60,7 @@ function mp3Player(volume: number, signal?: AbortSignal): Player {
       ended = true; pump();
       await playback;
     },
-    stop() { stop.abort(); void playback?.catch(() => {}); clearActiveSpeech(audio); cleanup(); },
+    stop() { stop.abort(); void playback?.catch(() => {}); clearActiveSpeech(audio, scope); cleanup(); },
   };
 }
 
@@ -105,27 +107,27 @@ export interface StreamSink { mp3(chunk: Uint8Array): void; pcm(chunk: Uint8Arra
 /** Runs `produce`, playing each chunk it hands over; returns its whole audio once played.
  * `onAudio` gets the whole audio as soon as it is synthesized, before the playback ends. */
 export async function streamAndPlay(volume: number, signal: AbortSignal | undefined,
-  produce: (sink: StreamSink) => Promise<Blob>, onAudio?: (audio: Blob) => void): Promise<Blob> {
+  produce: (sink: StreamSink) => Promise<Blob>, onAudio?: (audio: Blob) => void, scope?: SpeechScope): Promise<Blob> {
   let player: Player | undefined;
-  resetSpeechMarks();
+  resetSpeechMarks(scope);
   // What has been received, kept even if the speech is cut off: the history can play that part.
   const received: Uint8Array[] = [];
   const sink: StreamSink = {
-    mark: addSpeechMark,
-    mp3: chunk => { received.push(chunk); (player ??= mp3Player(volume, signal)).push(chunk); },
+    mark: mark => addSpeechMark(mark, scope),
+    mp3: chunk => { received.push(chunk); (player ??= mp3Player(volume, signal, scope)).push(chunk); },
     pcm: (chunk, rate) => { (player ??= pcmPlayer(rate, volume, signal)).push(chunk); },
   };
   try {
     const audio = await produce(sink);
-    finishSpeechLoading();
+    finishSpeechLoading(scope);
     onAudio?.(audio);
     await player?.end();
     return audio;
   } catch (error) {
     player?.stop();
     if (received.length) onAudio?.(new Blob(received as BlobPart[], { type: 'audio/mpeg' }));
-    resetSpeechMarks();
-    finishSpeechLoading();
+    resetSpeechMarks(scope);
+    finishSpeechLoading(scope);
     if (signal?.aborted || error instanceof StreamingSpeechError) throw error;
     throw new StreamingSpeechError(error instanceof Error ? error.message : String(error), !!player);
   }

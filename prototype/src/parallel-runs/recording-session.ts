@@ -19,9 +19,10 @@ import { recordingPreviewFragments, retainedPreviewSegments } from '../recording
 import { overlayRetention } from '../overlay-retention';
 import { publishScenarioProgress, type ScenarioProgress } from '../scenario-progress';
 import { synthesizeSystemSpeech, playSpeechAudio } from '../system-speech';
+import { speechHasOwnPlayer } from '../speech-providers';
 import { createSpeechProvider } from '../speech-providers';
 import { prepareEdgeSpeech } from '../edge-speech';
-import { clearActiveSpeech } from '../speech-playback-control';
+import { clearActiveSpeech, disposeSpeechScope } from '../speech-playback-control';
 
 import type { OverlayWindowController } from '../overlay-window';
 import type { WindowAutoSizer } from '../auto-size';
@@ -543,7 +544,7 @@ export function createRecordingSession(host: SessionHost) {
     if (scenarioId && scenarioId !== selected.activeScenarioId) return;
     if (!selected) return;
     completed = false;
-    clearActiveSpeech();
+    clearActiveSpeech(undefined, container);
 
     executionProgress.clear();
     reportExecutionProgress(undefined, false);
@@ -792,6 +793,7 @@ export function createRecordingSession(host: SessionHost) {
     const result = await runRecordingWorkflow(audioBlob, {
       initialText,
       initialError,
+      speechScope: container,
       history: history.repository,
       transcription: transcriptionProvider,
       postProcessor: textPostProcessor,
@@ -839,8 +841,10 @@ export function createRecordingSession(host: SessionHost) {
       },
       onInsertSound: () => { void emitSound('insert_text'); },
       speech: { synthesize: synthesizeSystemSpeech, play: playSpeechAudio },
-      speechForStep: step => createSpeechProvider(step, waiting => waitingFor(step, 'Ожидание провайдера…', waiting)),
+      speechForStep: step => createSpeechProvider(step, waiting => waitingFor(step, 'Ожидание провайдера…', waiting), container),
       runAction: (step, operation) => {
+        // A speech with its own player does not wait: it starts paused if another one is playing.
+        if (step.type === 'speak' && speechHasOwnPlayer(step)) return operation();
         const queue = step.type === 'speak' ? speechPlaybackQueue : textOutputQueue;
         return queue.execute(host.runId, step.id, operation, waiting => {
           waitingFor(step, step.type === 'speak' ? 'Ожидание воспроизведения…' : 'Ожидание вывода текста…', waiting);
@@ -1161,6 +1165,7 @@ export function createRecordingSession(host: SessionHost) {
     dispose() {
       if (disposed) return;
       disposed = true;
+      disposeSpeechScope(container);
       stopClaudePolling();
       clearErrorAutoHideTimer();
       stopLiveTranscription();

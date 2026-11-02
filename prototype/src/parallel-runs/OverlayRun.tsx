@@ -4,6 +4,7 @@ import { flushSync } from 'react-dom';
 import RecordingTranscriptPreview from '../RecordingTranscriptPreview';
 import type { RecordingPreview } from '../recording-transcript';
 import OverlaySteps, { type OverlayStepStatus } from '../OverlaySteps';
+import { SpeechScopeContext } from '../speech-playback-control';
 
 export function OverlayRuns() {
   return <div id="overlay-container" className="overlay-stage overlay-content-hidden">
@@ -41,7 +42,7 @@ export function OverlayRun({ target, showWaveform = true }: { target: HTMLElemen
               </svg>
             </span>}
             <span className="overlay-title" data-role="overlay-status-text">Ожидание</span>
-            {steps.length > 0 && <OverlaySteps steps={steps} />}
+            {steps.length > 0 && <SpeechScopeContext.Provider value={target}><OverlaySteps steps={steps} /></SpeechScopeContext.Provider>}
           </div>
         </div>
 

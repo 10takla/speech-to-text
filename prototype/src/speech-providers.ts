@@ -5,6 +5,7 @@ import { piperFetch } from './piper-http';
 import { createProviderFetch } from './parallel-runs/provider-fetch';
 import { speakEdgeSpeech, synthesizeEdgeSpeech } from './edge-speech';
 import { canStreamMp3, streamAndPlay } from './streaming-playback';
+import type { SpeechScope } from './speech-playback-control';
 
 
 export interface SpeechVoice { id: string; name: string; language?: string; speakers?: { id: number; name: string }[]; defaults?: Record<string, number> }
@@ -166,6 +167,12 @@ const geminiInteractions = (model: string) => {
 // step.delta events) stream PCM; 2.5 Flash TTS sends the whole audio in one chunk at the end.
 const geminiStreams = (model: string) => (geminiVersion(model)?.[0] ?? 0) >= 3;
 
+/** The step's speech has its own player in the overlay (MP3 streams): it needs no turn in the playback queue. */
+export function speechHasOwnPlayer(step: Pick<ScenarioStep, 'speechProvider' | 'speechProviders'>): boolean {
+  const provider = step.speechProvider ?? 'system';
+  return (provider === 'edge' || provider === 'elevenlabs') && canStreamMp3();
+}
+
 /** Whether the step's speech plays while it is synthesized. */
 export function speechStreams(step: Pick<ScenarioStep, 'speechProvider' | 'speechProviders'>): boolean {
   const provider = step.speechProvider ?? 'system';
@@ -324,7 +331,7 @@ export async function synthesizeProviderSpeech(step: ScenarioStep, text: string,
   return audio[0];
 }
 
-export function createSpeechProvider(step: ScenarioStep, onWaiting?: (waiting: boolean) => void) {
+export function createSpeechProvider(step: ScenarioStep, onWaiting?: (waiting: boolean) => void, scope?: SpeechScope) {
   const snapshot = structuredClone(step);
   const limitedFetch = createProviderFetch(fetch, onWaiting);
   const edge = normalizeSpeechProviders(snapshot.speechProviders).edge;
@@ -338,11 +345,11 @@ export function createSpeechProvider(step: ScenarioStep, onWaiting?: (waiting: b
       if (problem) throw new Error(problem);
       const settings = normalizeSpeechProviders(snapshot.speechProviders);
       if (snapshot.speechProvider === 'gemini') return streamAndPlay(settings.gemini.volume, signal,
-        sink => streamGeminiSpeech(settings.gemini, text, signal, limitedFetch, sink.pcm), onAudio);
+        sink => streamGeminiSpeech(settings.gemini, text, signal, limitedFetch, sink.pcm), onAudio, scope);
       if (snapshot.speechProvider === 'elevenlabs') return streamAndPlay(settings.elevenlabs.volume, signal,
-        sink => streamElevenSpeech(settings.elevenlabs, text, signal, limitedFetch, sink.mp3), onAudio);
+        sink => streamElevenSpeech(settings.elevenlabs, text, signal, limitedFetch, sink.mp3), onAudio, scope);
       // Only the chosen provider speaks: a failure is the step's error, no other voice replaces it.
-      return speakEdgeSpeech(text, edge, signal, onAudio);
+      return speakEdgeSpeech(text, edge, signal, onAudio, scope);
     },
     play: (audio: Blob, signal?: AbortSignal) => {
       const provider = snapshot.speechProvider ?? 'system';

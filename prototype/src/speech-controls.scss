@@ -18,6 +18,13 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
+
+    // Not available yet (nothing has arrived), but the buttons still read as buttons:
+    // the user sees what they will be, so only dimmed a little.
+    &:disabled {
+      opacity: 0.7;
+      cursor: default;
+    }
   }
 
   .speech-rate-stepper {
@@ -74,7 +81,7 @@
       }
 
       &:disabled {
-        opacity: 0.25;
+        opacity: 0.55;
         cursor: default;
       }
 

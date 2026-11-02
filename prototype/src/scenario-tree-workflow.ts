@@ -136,7 +136,7 @@ export async function runScenarioTree(audio: Blob, scenario: Scenario, dependenc
           states.set(step.id, { ...states.get(step.id)!, audioBlob: audio, text: input.text, ...(speechMarks.length ? { speechMarks: [...speechMarks] } : {}) });
           save();
         };
-        const audio = speak ? await run(() => speak(input.text, signal, audio => keepAudio(audio, getSpeechMarks()))) : await speech.synthesize(input.text, signal, step.speechSettings);
+        const audio = speak ? await run(() => speak(input.text, signal, audio => keepAudio(audio, getSpeechMarks(dependencies.speechScope)))) : await speech.synthesize(input.text, signal, step.speechSettings);
         abort(); if (!speak) keepAudio(audio);
         if (!speak) await run(() => speech.play(audio, signal, step.speechSettings));
         output = { type: 'audio', audio, recording: false };

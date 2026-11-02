@@ -4,7 +4,7 @@ import { AUTO_SPEECH_LANGUAGE, normalizeSpeechSettings, pickSpeechLanguage, type
 import { playSpeechAudio, type SystemSpeechVoice } from './system-speech';
 import { canStreamMp3, streamAndPlay } from './streaming-playback';
 import type { ScenarioStep } from './scenario';
-import type { SpeechMark } from './speech-playback-control';
+import type { SpeechMark, SpeechScope } from './speech-playback-control';
 import { walkScenarioSteps } from './scenario-tree';
 import { normalizeSpeechProviders } from './speech-provider-settings';
 
@@ -79,7 +79,7 @@ export function synthesizeEdgeSpeech(text: string, options?: SystemSpeechSetting
 
 /** Plays the speech while it streams in; returns the whole audio. */
 export async function speakEdgeSpeech(text: string, options?: SystemSpeechSettings, signal?: AbortSignal,
-  onAudio?: (audio: Blob) => void): Promise<Blob> {
+  onAudio?: (audio: Blob) => void, scope?: SpeechScope): Promise<Blob> {
   const settings = normalizeSpeechSettings(options);
   if (!canStreamMp3()) {
     const audio = await synthesizeEdgeSpeech(text, settings, signal);
@@ -87,5 +87,5 @@ export async function speakEdgeSpeech(text: string, options?: SystemSpeechSettin
     await playSpeechAudio(audio, signal, settings);
     return audio;
   }
-  return streamAndPlay(settings.volume, signal, sink => streamEdgeSpeech(text, settings, signal, sink.mp3, sink.mark), onAudio);
+  return streamAndPlay(settings.volume, signal, sink => streamEdgeSpeech(text, settings, signal, sink.mp3, sink.mark), onAudio, scope);
 }

@@ -1,6 +1,7 @@
 import { createResourceQueue } from './resource-queue';
 import { walkScenarioSteps } from '../scenario-tree';
 import type { ScenarioStep } from '../scenario';
+import { speechHasOwnPlayer } from '../speech-providers';
 
 export const textOutputQueue = createResourceQueue();
 export const speechPlaybackQueue = createResourceQueue();
@@ -22,7 +23,8 @@ export function observeRecordingResource(listener: (value: boolean) => void) {
 export function registerRunResources(runId: string, steps: ScenarioStep[]) {
   const enabled = [...walkScenarioSteps(steps)].filter(step => step.enabled);
   textOutputQueue.register(runId, enabled.filter(step => step.type === 'copy' || step.type === 'paste').map(step => step.id));
-  speechPlaybackQueue.register(runId, enabled.filter(step => step.type === 'speak').map(step => step.id));
+  // A speech with its own player plays on the user's choice, not in turn.
+  speechPlaybackQueue.register(runId, enabled.filter(step => step.type === 'speak' && !speechHasOwnPlayer(step)).map(step => step.id));
 }
 
 export function finishRunResources(runId: string) {

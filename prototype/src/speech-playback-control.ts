@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { createContext, useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { isTauri } from '@tauri-apps/api/core';
 import { connectNativeSpeechMedia } from './speech-native-media';
 
@@ -9,36 +9,98 @@ import { connectNativeSpeechMedia } from './speech-native-media';
 /** A spoken word or sentence and when it sounds, in seconds from the start of the audio. */
 export interface SpeechMark { kind: 'WordBoundary' | 'SentenceBoundary'; text: string; from: number; to: number }
 
-let active: HTMLAudioElement | undefined;
-let marks: readonly SpeechMark[] = [];
-// The service is still sending the audio (until the last chunk has arrived).
-let streaming = false;
-let activeCleanup: (() => void) | undefined;
-let mediaCleanup: (() => void) | undefined;
-const listeners = new Set<() => void>();
-const notify = () => listeners.forEach(listener => listener());
+// Each run has its own speech (its scope): several speeches can wait on screen at the same
+// time, and the user chooses which one plays. Without a scope they share one.
+export type SpeechScope = object;
+const SHARED_SCOPE: SpeechScope = {};
+/** The scope the speech controls and text below read from. */
+export const SpeechScopeContext = createContext<SpeechScope>(SHARED_SCOPE);
 
-export function setActiveSpeech(audio: HTMLAudioElement | undefined, cleanup?: () => void): void {
-  if (active === audio) return;
-  mediaCleanup?.();
-  activeCleanup?.();
-  active = audio;
-  activeCleanup = cleanup;
-  mediaCleanup = audio ? connectMediaControls(audio) : undefined;
-  notify();
+interface SpeechState {
+  active?: HTMLAudioElement;
+  marks: readonly SpeechMark[];
+  // The service is still sending the audio (until the last chunk has arrived).
+  streaming: boolean;
+  detach?: () => void;
+  cleanup?: () => void;
+  listeners: Set<() => void>;
+}
+const states = new Map<SpeechScope, SpeechState>();
+function stateOf(scope: SpeechScope = SHARED_SCOPE): SpeechState {
+  let state = states.get(scope);
+  if (!state) { state = { marks: [], streaming: false, listeners: new Set() }; states.set(scope, state); }
+  return state;
+}
+const notify = (state: SpeechState) => state.listeners.forEach(listener => listener());
+const subscribe = (state: SpeechState) => (listener: () => void) => { state.listeners.add(listener); return () => { state.listeners.delete(listener); }; };
+
+// The system media controls follow one speech: the one that plays, else any.
+let mediaOwner: { audio: HTMLAudioElement; cleanup?: () => void } | undefined;
+function syncMedia(): void {
+  const audios = [...states.values()].flatMap(state => state.active ? [state.active] : []);
+  const audio = audios.find(item => !item.paused) ?? audios[0];
+  if (mediaOwner?.audio === audio) return;
+  mediaOwner?.cleanup?.();
+  mediaOwner = audio ? { audio, cleanup: connectMediaControls(audio) } : undefined;
 }
 
-export function clearActiveSpeech(audio?: HTMLAudioElement): void {
-  if (!audio || active === audio) {
-    mediaCleanup?.();
-    mediaCleanup = undefined;
-    activeCleanup?.();
-    activeCleanup = undefined;
-    active = undefined;
-    // The marks stay: the finished text keeps its tracks. The next speech starts with none.
-    streaming = false;
-    notify();
+/** Another speech is playing: a new one waits paused until the user starts it. */
+export function isOtherSpeechPlaying(scope?: SpeechScope): boolean {
+  const own = stateOf(scope);
+  return [...states.values()].some(state => state !== own && !!state.active && !state.active.paused && !state.active.ended);
+}
+
+export function setActiveSpeech(audio: HTMLAudioElement | undefined, cleanup?: () => void, scope?: SpeechScope): void {
+  const state = stateOf(scope);
+  if (state.active === audio) return;
+  state.detach?.();
+  state.cleanup?.();
+  state.active = audio;
+  state.cleanup = cleanup;
+  state.detach = undefined;
+  if (audio) {
+    // The user starts this speech: the others pause, so the user chooses what to hear.
+    const onPlay = () => {
+      for (const other of states.values()) {
+        if (other.active && other.active !== audio && !other.active.paused) {
+          if (other.active.dataset) other.active.dataset.userPaused = 'true';
+          other.active.pause();
+        }
+      }
+      syncMedia();
+    };
+    audio.addEventListener?.('play', onPlay);
+    state.detach = () => audio.removeEventListener?.('play', onPlay);
   }
+  syncMedia();
+  notify(state);
+}
+
+function clearState(state: SpeechState, audio?: HTMLAudioElement): void {
+  if (audio && state.active !== audio) return;
+  state.detach?.();
+  state.detach = undefined;
+  state.cleanup?.();
+  state.cleanup = undefined;
+  state.active = undefined;
+  // The marks stay: the finished text keeps its tracks. The next speech starts with none.
+  state.streaming = false;
+  syncMedia();
+  notify(state);
+}
+
+/** Without a scope and without audio: all speeches. */
+export function clearActiveSpeech(audio?: HTMLAudioElement, scope?: SpeechScope): void {
+  if (scope || audio) { clearState(stateOf(scope), audio); return; }
+  for (const state of states.values()) clearState(state);
+}
+
+/** The run is gone: its speech and marks go with it. */
+export function disposeSpeechScope(scope: SpeechScope): void {
+  const state = states.get(scope);
+  if (!state) return;
+  clearState(state);
+  states.delete(scope);
 }
 
 function connectMediaControls(audio: HTMLAudioElement): (() => void) | undefined {
@@ -68,34 +130,44 @@ function connectMediaControls(audio: HTMLAudioElement): (() => void) | undefined
 }
 
 /** The marks arrive with the audio; a new speech starts with none. */
-export function resetSpeechMarks(): void {
-  if (!marks.length && !streaming) return;
-  marks = [];
-  streaming = true;
-  notify();
+export function resetSpeechMarks(scope?: SpeechScope): void {
+  const state = stateOf(scope);
+  if (!state.marks.length && !state.streaming) return;
+  state.marks = [];
+  state.streaming = true;
+  notify(state);
 }
 
 /** The last chunk has arrived: the whole audio is loaded. */
-export function finishSpeechLoading(): void {
-  if (!streaming) return;
-  streaming = false;
-  notify();
+export function finishSpeechLoading(scope?: SpeechScope): void {
+  const state = stateOf(scope);
+  if (!state.streaming) return;
+  state.streaming = false;
+  notify(state);
 }
 
 export function useSpeechLoading(): boolean {
-  return useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, () => streaming);
+  const state = stateOf(useContext(SpeechScopeContext));
+  return useSyncExternalStore(subscribe(state), () => state.streaming);
 }
 
-export function addSpeechMark(mark: SpeechMark): void {
-  marks = [...marks, mark];
-  notify();
+export function addSpeechMark(mark: SpeechMark, scope?: SpeechScope): void {
+  const state = stateOf(scope);
+  state.marks = [...state.marks, mark];
+  notify(state);
 }
 
 /** The marks of the speech being shown (or just finished). */
-export const getSpeechMarks = (): readonly SpeechMark[] => marks;
+export const getSpeechMarks = (scope?: SpeechScope): readonly SpeechMark[] => stateOf(scope).marks;
 
 export function useSpeechMarks(): readonly SpeechMark[] {
-  return useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, () => marks);
+  const state = stateOf(useContext(SpeechScopeContext));
+  return useSyncExternalStore(subscribe(state), () => state.marks);
+}
+
+export function useActiveSpeech(): HTMLAudioElement | undefined {
+  const state = stateOf(useContext(SpeechScopeContext));
+  return useSyncExternalStore(subscribe(state), () => state.active);
 }
 
 /** The audio's position while it plays, smoothly (about every frame). */
@@ -118,10 +190,6 @@ export function useSpeechTime(audio: HTMLAudioElement | undefined): number {
 export function seekTo(audio: HTMLAudioElement, seconds: number): void {
   const maxEnd = Math.max(receivedEnd(audio), Number.isFinite(audio.duration) ? audio.duration : 0);
   audio.currentTime = Math.max(0, Math.min(maxEnd - .05, seconds));
-}
-
-export function useActiveSpeech(): HTMLAudioElement | undefined {
-  return useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, () => active);
 }
 
 /** A pause by the user survives the end of a recording, which otherwise resumes the speech. */

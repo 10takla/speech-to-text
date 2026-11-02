@@ -1,4 +1,4 @@
-import { getSpeechMarks, type SpeechMark } from './speech-playback-control';
+import { getSpeechMarks, type SpeechMark, type SpeechScope } from './speech-playback-control';
 import type { AppSettings } from './config';
 import type { HistoryRepository, TextOutputPort, TextPostProcessor, TranscriptionProvider } from './ports';
 import type { RecordingFragment, TimeRange } from './recording-editor';
@@ -21,6 +21,8 @@ type WorkflowSettings = Pick<AppSettings, 'historyMaxItems'> & ScenarioWorkflowS
 
 export interface RecordingWorkflowDependencies {
   initialText?: string;
+  // The run's speech in the overlay: its marks are read from here.
+  speechScope?: SpeechScope;
   // The text source failed (e.g. Claude Code heard nothing): the run is recorded in history as that step's error.
   initialError?: string;
   history: HistoryRepository;
@@ -381,7 +383,7 @@ export async function runRecordingWorkflow(
               ...(speechMarks.length ? { speechMarks: [...speechMarks] } : {}) };
             if (historyEntryId) save({ steps: historySteps.slice() });
           };
-          if (speak) currentAudio = await runAction(step, () => speak(finalText, signal, audio => keepAudio(audio, getSpeechMarks())));
+          if (speak) currentAudio = await runAction(step, () => speak(finalText, signal, audio => keepAudio(audio, getSpeechMarks(dependencies.speechScope))));
           else currentAudio = await speech.synthesize(finalText, signal, step.speechSettings);
           if (signal?.aborted) return { status: 'cancelled' };
           if (!speak) keepAudio(currentAudio);
