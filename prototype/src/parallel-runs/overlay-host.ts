@@ -74,6 +74,7 @@ export function initializeOverlayHost() {
     run.session.dispose();
     run.disposeView();
     update();
+    if (!runs.length) clearActiveSpeech();
     if (runs.length || windowController?.previewActive) return true;
     if (isAndroid) {
       stoppingAndroidService = androidCall('stopRecordingService').catch(console.warn);
@@ -84,7 +85,6 @@ export function initializeOverlayHost() {
       pendingHide = pendingHide.then(async () => {
         if (runs.length || windowController?.previewActive) return;
         // All blocks disappeared, so a pin no longer retains any content.
-        clearActiveSpeech();
         overlayRetention.setPinned(false);
         await invokeCommand(nativeInvoke, 'set_overlay_pinned', { pinned: false });
         if (!runs.length && !windowController?.previewActive) await invokeCommand(nativeInvoke, 'hide_overlay');
@@ -203,7 +203,6 @@ export function initializeOverlayHost() {
     container.classList.toggle('overlay-pinned', pinned);
     if (invoke && !isAndroid) void invokeCommand(invoke, 'set_overlay_pinned', { pinned }).catch(console.warn);
     if (!pinned) {
-      clearActiveSpeech();
       for (const run of [...runs]) if (run.session.completed) void removeRun(run);
     }
     update();

@@ -4,6 +4,11 @@ import { defaultSettings, saveSettings } from '../config';
 import { createDefaultScenario } from '../scenario';
 import { overlayRetention } from '../overlay-retention';
 import { initializeOverlayHost } from './overlay-host';
+import { createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+import { flushSync } from 'react-dom';
+import SpeechControls from '../SpeechControls';
+import { clearActiveSpeech, setActiveSpeech } from '../speech-playback-control';
 
 const runtime = vi.hoisted(() => ({ sessions: [] as any[], windowEvents: [] as string[], height: 300, y: 740 }));
 vi.mock('../logger', () => ({ initLoggerForwarding() {} }));
@@ -81,4 +86,51 @@ it('routes triggers and Escape to individual runs, retaining pinned blocks until
   expect(runtime.windowEvents).toEqual(['resize', 'restore']);
   expect(runtime.y).toBe(986);
   await host.cancel();
+});
+
+it('keeps speech controls connected when an outside click unpins an unfinished run', async () => {
+  document.body.innerHTML = '<div id="overlay-container"><div id="overlay-runs"></div><div id="overlay-width-skeleton-preview"></div></div>';
+  const settings = defaultSettings();
+  saveSettings({ ...settings, scenarios: [settings.scenarios[0]], position: { x: 0, y: 0 } });
+  const host = initializeOverlayHost();
+  await host.trigger(settings.scenarios[0].id);
+  const run = runtime.sessions.at(-1);
+  await host.trigger(settings.scenarios[0].id);
+  const probe = document.createElement('div');
+  document.getElementById('overlay-container')!.append(probe);
+  const controls = createRoot(probe);
+  const audio = document.createElement('audio');
+  let paused = false;
+  Object.defineProperties(audio, {
+    duration: { value: 10 }, paused: { get: () => paused },
+    buffered: { value: { length: 1, end: () => 10 } },
+  });
+  audio.currentTime = 3;
+  const play = vi.spyOn(audio, 'play').mockImplementation(async () => { paused = false; audio.dispatchEvent(new Event('play')); });
+  vi.spyOn(audio, 'pause').mockImplementation(() => { paused = true; audio.dispatchEvent(new Event('pause')); });
+  const cleanup = vi.fn(() => audio.pause());
+  try {
+    flushSync(() => { setActiveSpeech(audio, cleanup); controls.render(createElement(SpeechControls)); });
+    overlayRetention.setPinned(true);
+    flushSync(() => { document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); });
+    expect(overlayRetention.pinned).toBe(false);
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(probe.textContent).toContain('0:03 / 0:10');
+    const pause = probe.querySelector<HTMLButtonElement>('[aria-label="Пауза"]')!;
+    expect(pause.disabled).toBe(false);
+    flushSync(() => pause.click());
+    expect(audio.paused).toBe(true);
+    flushSync(() => probe.querySelector<HTMLButtonElement>('[aria-label="Продолжить"]')!.click());
+    expect(play).toHaveBeenCalledOnce();
+    expect(audio.currentTime).toBe(3);
+    expect(document.querySelectorAll('.overlay-run')).toHaveLength(1);
+    audio.currentTime = 10; paused = true; audio.dispatchEvent(new Event('ended'));
+    await run.complete();
+    await vi.waitFor(() => expect(cleanup).toHaveBeenCalledOnce());
+    expect(document.querySelectorAll('.overlay-run')).toHaveLength(0);
+  } finally {
+    flushSync(() => controls.unmount());
+    clearActiveSpeech();
+    await host.cancel();
+  }
 });
