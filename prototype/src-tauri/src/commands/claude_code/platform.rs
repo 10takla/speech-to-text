@@ -91,7 +91,14 @@ fn child_pid(parent: u32) -> Option<(u32, Vec<u32>)> {
     }
 }
 
+// COM apartment is per thread and cpal (the parallel capture) sets its own on the
+// pooled threads this runs on, so a mismatch breaks its audio client. A throwaway
+// thread keeps the apartment of every pooled thread untouched.
 fn microphone_active(pid: u32) -> Result<bool, String> {
+    std::thread::spawn(move || microphone_active_here(pid)).join().map_err(|_| "Проверка микрофона Claude Code прервана".to_string())?
+}
+
+fn microphone_active_here(pid: u32) -> Result<bool, String> {
     use windows::{core::Interface, Win32::{Media::Audio::*, System::Com::*}};
     unsafe {
         let initialized = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -352,11 +359,30 @@ fn ensure(slot: &mut Option<Session>, visible: bool) -> Result<&mut Session, Str
         }
         let Some((pid, hwnd)) = found else { let status = child.try_wait().ok().flatten(); let _ = child.kill(); child.wait(); return Err(format!("Не найдена классическая консоль Claude Code (код завершения: {status:?}).")); };
         unsafe { ShowWindow(hwnd as HWND, if visible { SW_SHOW } else { SW_HIDE }); if !visible && !target.is_null() { SetForegroundWindow(target); } }
-        sleep(Duration::from_secs(5));
-        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            return Err(format!("Claude Code завершился при запуске: {status}"));
+        let mut session = Session { child, _job: job, pid, hwnd, dir, owner: None, mic_seen: false, touched: Instant::now(), live_misses: 0 };
+        // Ready means Claude has drawn its prompt. The visible console is where the
+        // user signs in, so it has no prompt yet and is not waited for. The limit
+        // only guards against a hung Claude; readiness itself is the screen.
+        let ready_deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(status) = session.child.try_wait().map_err(|e| e.to_string())? {
+                return Err(format!("Claude Code завершился при запуске: {status}"));
+            }
+            if visible { break; }
+            if unsafe { IsWindow(session.hwnd as HWND) } == 0 {
+                let _ = session.child.kill(); session.child.wait();
+                return Err("Окно Claude Code закрылось при запуске.".into());
+            }
+            let current = screen(&session).ok();
+            if current.as_deref().and_then(prompt_text).is_some() { break; }
+            if Instant::now() > ready_deadline {
+                let tail = current.as_deref().map(screen_tail).unwrap_or_default();
+                let _ = session.child.kill(); session.child.wait();
+                return Err(format!("Claude Code не показал строку ввода. Откройте его окно в настройках шага и завершите вход или первоначальную настройку. Экран: {tail}"));
+            }
+            sleep(Duration::from_millis(100));
         }
-        *slot = Some(Session { child, _job: job, pid, hwnd, dir, owner: None, mic_seen: false, touched: Instant::now(), live_misses: 0 });
+        *slot = Some(session);
     }
     let session = slot.as_mut().unwrap();
     if visible { unsafe { ShowWindow(session.hwnd as HWND, SW_RESTORE); SetForegroundWindow(session.hwnd as HWND); } }
@@ -415,16 +441,17 @@ pub fn start(run_id: &str) -> Result<(), String> {
         let _ = key(s, 0x1b, 0x1b, 0);
         s.owner = None;
     }
+    let begun = Instant::now();
     let stale = std::fs::remove_file(s.dir.join("transcript.txt")).is_ok();
-    log::info!("Claude Code start: stale transcript removed={stale}; screen ends with {}",
-        screen(s).map(|current| screen_tail(&current)).unwrap_or_else(|error| error));
+    log::info!("Claude Code start: stale transcript removed={stale}");
     clear_prompt(s)?;
+    let cleared = begun.elapsed();
     key(s, 0x20, 0x20, 0)?;
     s.owner = Some(run_id.to_owned()); s.mic_seen = false; s.touched = Instant::now(); s.live_misses = 0;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if microphone_active(s.pid).unwrap_or(false) { s.mic_seen = true; log::info!("Claude Code recording started"); return Ok(()); }
-        sleep(Duration::from_millis(150));
+        if microphone_active(s.pid).unwrap_or(false) { s.mic_seen = true; log::info!("Claude Code recording started: prompt cleared in {} ms, microphone opened {} ms after Space", cleared.as_millis(), (begun.elapsed() - cleared).as_millis()); return Ok(()); }
+        sleep(Duration::from_millis(40));
     }
     let _ = key(s, 0x1b, 0x1b, 0); s.owner = None;
     unsafe { ShowWindow(s.hwnd as HWND, SW_RESTORE); }
