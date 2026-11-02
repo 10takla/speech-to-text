@@ -202,10 +202,7 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show_panel" => {
                         if let Some(main_win) = app.get_webview_window("main") {
-                            let _ = main_win.set_skip_taskbar(false);
-                            let _ = main_win.unminimize();
-                            let _ = main_win.show();
-                            let _ = main_win.set_focus();
+                            crate::commands::show_control_panel(&main_win);
                         }
                     }
                     "show_overlay" => {
@@ -225,10 +222,7 @@ pub fn run() {
                     {
                         let app = tray.app_handle();
                         if let Some(main_win) = app.get_webview_window("main") {
-                            let _ = main_win.set_skip_taskbar(false);
-                            let _ = main_win.unminimize();
-                            let _ = main_win.show();
-                            let _ = main_win.set_focus();
+                            crate::commands::show_control_panel(&main_win);
                         }
                     }
                 })
@@ -243,6 +237,10 @@ pub fn run() {
             if let Some(main_window) = app.get_webview_window("main") {
                 let main_window_clone = main_window.clone();
                 main_window.on_window_event(move |event| {
+                    if matches!(event, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Focused(true)
+                        | tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. }) {
+                        crate::commands::rescue_control_panel(&main_window_clone);
+                    }
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         api.prevent_close();
                         let _ = main_window_clone.hide();

@@ -38,6 +38,57 @@ pub fn show_overlay(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Shows the control panel and makes sure it is reachable. After hibernation or a
+/// monitor change the hidden window can keep a position outside every screen
+/// (e.g. above the top edge), where the title bar cannot be grabbed.
+pub fn show_control_panel(window: &tauri::WebviewWindow) {
+    let _ = window.set_skip_taskbar(false);
+    let _ = window.unminimize();
+    let _ = window.show();
+    if let Err(error) = keep_on_screen(window, true) { log::warn!("Не удалось вернуть панель управления на экран: {error}"); }
+    let _ = window.set_focus();
+}
+
+/// For window events (moved, focused, restored from the taskbar): pulls the window back
+/// only when its title bar is out of reach, so normal dragging is not disturbed.
+pub fn rescue_control_panel(window: &tauri::WebviewWindow) {
+    // A minimized window reports a parking position far outside the screens.
+    if window.is_minimized().unwrap_or(false) || !window.is_visible().unwrap_or(false) { return; }
+    if let Err(error) = keep_on_screen(window, false) { log::warn!("Не удалось вернуть панель управления на экран: {error}"); }
+}
+
+fn keep_on_screen(window: &tauri::WebviewWindow, always_fit: bool) -> Result<(), String> {
+    let position = window.outer_position().map_err(|e| e.to_string())?;
+    let size = window.outer_size().map_err(|e| e.to_string())?;
+    let monitors = window.available_monitors().map_err(|e| e.to_string())?;
+    // The title bar decides whether the window can be moved: use the monitor under its top centre.
+    let (top_x, top_y) = (position.x + size.width as i32 / 2, position.y + 10);
+    let under_title = monitors.iter().find(|monitor| {
+        let (origin, extent) = (monitor.position(), monitor.size());
+        top_x >= origin.x && top_x < origin.x + extent.width as i32 && top_y >= origin.y && top_y < origin.y + extent.height as i32
+    });
+    let reachable = monitors.iter().any(|monitor| {
+        let area = monitor.work_area();
+        top_x >= area.position.x && top_x < area.position.x + area.size.width as i32
+            && top_y >= area.position.y && top_y < area.position.y + area.size.height as i32
+    });
+    if reachable && !always_fit { return Ok(()); }
+    let monitor = match under_title {
+        Some(monitor) => monitor.clone(),
+        None => window.primary_monitor().map_err(|e| e.to_string())?
+            .or_else(|| monitors.first().cloned()).ok_or("Нет доступных мониторов")?,
+    };
+    let area = monitor.work_area();
+    let max_x = (area.position.x + area.size.width as i32 - size.width as i32).max(area.position.x);
+    let max_y = (area.position.y + area.size.height as i32 - size.height as i32).max(area.position.y);
+    let next = PhysicalPosition::new(position.x.clamp(area.position.x, max_x), position.y.clamp(area.position.y, max_y));
+    if next != position {
+        log::info!("Панель управления вне экрана ({}, {}), возвращаю в ({}, {})", position.x, position.y, next.x, next.y);
+        window.set_position(next).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn resize_control_panel_to_content(app: AppHandle, width: f64, height: f64, _keep_center: Option<bool>) -> Result<(), String> {
     if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {

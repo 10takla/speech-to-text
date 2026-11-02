@@ -32,4 +32,4 @@ pub use audio::{cancel_audio_recording, list_microphones, check_microphone, get_
 pub use clipboard::{copy_text_to_clipboard, paste_text_into_active_window, write_clipboard_text};
 pub use hotkeys::{set_control_hotkeys_active, set_control_hotkeys, set_record_hotkey, set_scenario_hotkeys};
 pub use logs::get_app_logs;
-pub use window::{hide_overlay, is_overlay_dragging, open_microphone_settings, position_overlay_on_cursor_monitor, remember_overlay_position, resize_control_panel_to_content, resize_overlay_to_content, show_overlay, start_overlay_dragging};
+pub use window::{hide_overlay, is_overlay_dragging, open_microphone_settings, position_overlay_on_cursor_monitor, remember_overlay_position, resize_control_panel_to_content, resize_overlay_to_content, rescue_control_panel, show_control_panel, show_overlay, start_overlay_dragging};
