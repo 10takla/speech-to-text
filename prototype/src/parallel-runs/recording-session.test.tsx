@@ -92,6 +92,7 @@ it('records through Claude with the overlay visible and passes native text to th
 it('cancels Claude recording without invoking the text workflow or ordinary capture', async () => {
   const item = fixture('claude-cancel');
   item.settings.scenarios[0].steps.splice(0, 2, createStep('claudeCode'));
+  item.invoke.mockImplementation(async command => command === 'poll_claude_dictation' ? { finished: false, text: null } : undefined);
   await start(item.session);
   await item.session.cancel();
   expect(item.invoke).toHaveBeenCalledWith('cancel_claude_code', { runId: 'claude-cancel' });

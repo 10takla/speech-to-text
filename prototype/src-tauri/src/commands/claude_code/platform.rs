@@ -131,8 +131,19 @@ fn with_console<T>(session: &Session, operation: impl FnOnce() -> Result<T, Stri
         let mut processes = [0u32; 2];
         let had_console = GetConsoleProcessList(processes.as_mut_ptr(), processes.len() as u32) > 0;
         FreeConsole();
-        let result = if AttachConsole(session.pid) == 0 {
-            Err(failure("Не удалось подключиться к консоли Claude Code"))
+        // The console host sometimes refuses a moment after another attach/detach
+        // (ERROR_INVALID_FUNCTION); a short retry is enough.
+        let mut attached = AttachConsole(session.pid) != 0;
+        let mut error = if attached { None } else { Some(failure("Не удалось подключиться к консоли Claude Code")) };
+        for _ in 0..10 {
+            if attached { break; }
+            std::thread::sleep(Duration::from_millis(30));
+            FreeConsole();
+            if AttachConsole(session.pid) != 0 { attached = true; error = None; }
+            else { error = Some(failure("Не удалось подключиться к консоли Claude Code")); }
+        }
+        let result = if let Some(error) = error {
+            Err(error)
         } else {
             let result = operation();
             FreeConsole();

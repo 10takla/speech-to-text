@@ -699,7 +699,7 @@ export function createRecordingSession(host: SessionHost) {
             stopClaudePolling();
             claudeRecording = false;
             void invokeCommand(invoke!, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
-            setOverlayState('error', errorMessage(error));
+            void recordClaudeFailure(generation, error);
           }).finally(() => { claudePolling = false; });
         }, 250);
         return;
@@ -759,6 +759,7 @@ export function createRecordingSession(host: SessionHost) {
         else await getAudioCapture().cancel().catch(() => {});
       }
       console.error('Ошибка доступа к микрофону:', err);
+      if (usesClaude()) { await recordClaudeFailure(generation, err); return; }
       const details = describeMicrophoneError(err);
       setOverlayState('error', details.message, details.showSettings);
     }
@@ -862,6 +863,18 @@ export function createRecordingSession(host: SessionHost) {
       return;
     }
     await completeOverlayProcess();
+  }
+  // A Claude Code run that failed before it could finish still goes through the
+  // workflow, so the error is recorded in history like any other failed run.
+  async function recordClaudeFailure(generation: number, error: unknown) {
+    const controller = new AbortController();
+    workflowAbortController = controller;
+    setOverlayState('transcribing');
+    host.onRecordingReleased();
+    await processRecordedAudio(new Blob(), generation, controller.signal, '', errorMessage(error))
+      .catch(failure => {
+        if (generation === recordingGeneration) setOverlayState('error', errorMessage(failure));
+      });
   }
   async function finishRecording() {
     if (state !== 'recording' || pausePending || startingRecording) return;
