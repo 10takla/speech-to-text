@@ -220,8 +220,30 @@ export function seekBy(audio: HTMLAudioElement, seconds: number): void {
 
 export const SPEECH_RATES = [.75, 1, 1.25, 1.5, 1.75, 2] as const;
 
+const RATE_KEY = 'speech-playback-rate';
+
+/** The speed the user chose last: new speeches start with it. */
+export function savedSpeechRate(): number {
+  try {
+    const rate = Number(localStorage.getItem(RATE_KEY));
+    return (SPEECH_RATES as readonly number[]).includes(rate) ? rate : 1;
+  } catch { return 1; }
+}
+
+/** Remembers the speed for the speeches that start next. */
+export function saveSpeechRate(rate: number): void {
+  try { localStorage.setItem(RATE_KEY, String(rate)); } catch { /* The speed is just not remembered. */ }
+}
+
 export function setSpeechRate(audio: HTMLAudioElement, rate: number): void {
   // The voice keeps its pitch when sped up.
   audio.preservesPitch = true;
   audio.playbackRate = rate;
+  saveSpeechRate(rate);
+}
+
+/** A new speech starts at the remembered speed; speeches already playing keep theirs. */
+export function applySavedSpeechRate(audio: HTMLAudioElement): void {
+  const rate = savedSpeechRate();
+  if (rate !== 1) { audio.preservesPitch = true; audio.playbackRate = rate; }
 }

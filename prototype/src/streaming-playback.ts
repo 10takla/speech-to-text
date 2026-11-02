@@ -1,6 +1,6 @@
 import { observeRecordingResource } from './parallel-runs/runtime';
 import { playAudioElement } from './system-speech';
-import { addSpeechMark, clearActiveSpeech, finishSpeechLoading, isOtherSpeechPlaying, resetSpeechMarks, setActiveSpeech, type SpeechMark, type SpeechScope } from './speech-playback-control';
+import { addSpeechMark, applySavedSpeechRate, clearActiveSpeech, finishSpeechLoading, isOtherSpeechPlaying, resetSpeechMarks, setActiveSpeech, type SpeechMark, type SpeechScope } from './speech-playback-control';
 
 // Plays speech while it streams in: MP3 (Edge, ElevenLabs) through MediaSource,
 // raw 16-bit PCM (Gemini) through Web Audio. Pauses while a recording runs.
@@ -40,6 +40,7 @@ function mp3Player(volume: number, signal?: AbortSignal, scope?: SpeechScope): P
     pump();
   }, { once: true });
   const audio = new Audio(url);
+  applySavedSpeechRate(audio);
   const cleanup = () => {
     audio.pause();
     URL.revokeObjectURL(url);

@@ -1,7 +1,7 @@
 import type { WheelEvent } from 'react';
 import { useEffect, useState } from 'react';
 import './speech-controls.scss';
-import { receivedEnd, seekBy, setSpeechRate, SPEECH_RATES, togglePause, useActiveSpeech, useSpeechLoading } from './speech-playback-control';
+import { receivedEnd, saveSpeechRate, savedSpeechRate, seekBy, setSpeechRate, SPEECH_RATES, togglePause, useActiveSpeech, useSpeechLoading } from './speech-playback-control';
 
 const time = (seconds: number) => {
   const whole = Math.max(0, Math.floor(seconds));
@@ -28,21 +28,17 @@ export function SpeechControlsView({ audio, loading = false }: { audio?: HTMLAud
   // The total is known only once the stream has ended.
   const total = audio && Number.isFinite(audio.duration) ? audio.duration : received;
 
-  const currentRate = audio?.playbackRate || 1;
+  // The speed can be chosen before any audio has arrived: the speech then starts with it.
+  const currentRate = audio?.playbackRate || savedSpeechRate();
   const rateIndex = SPEECH_RATES.findIndex(rate => Math.abs(rate - currentRate) < 0.01);
   const currentIndex = rateIndex >= 0 ? rateIndex : SPEECH_RATES.indexOf(1);
 
-  const stepUp = () => {
-    if (audio && currentIndex < SPEECH_RATES.length - 1) {
-      setSpeechRate(audio, SPEECH_RATES[currentIndex + 1]);
-    }
+  const changeRate = (rate: number) => {
+    if (audio) setSpeechRate(audio, rate);
+    else { saveSpeechRate(rate); refresh(value => value + 1); }
   };
-
-  const stepDown = () => {
-    if (audio && currentIndex > 0) {
-      setSpeechRate(audio, SPEECH_RATES[currentIndex - 1]);
-    }
-  };
+  const stepUp = () => { if (currentIndex < SPEECH_RATES.length - 1) changeRate(SPEECH_RATES[currentIndex + 1]); };
+  const stepDown = () => { if (currentIndex > 0) changeRate(SPEECH_RATES[currentIndex - 1]); };
 
   const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -64,7 +60,7 @@ export function SpeechControlsView({ audio, loading = false }: { audio?: HTMLAud
         <div className="speech-rate-buttons">
           <button type="button" className="speech-rate-btn speech-rate-btn--up"
             title="Увеличить скорость" aria-label="Увеличить скорость"
-            disabled={!audio || currentIndex >= SPEECH_RATES.length - 1}
+            disabled={currentIndex >= SPEECH_RATES.length - 1}
             onClick={stepUp}>
             <svg width="6" height="4" viewBox="0 0 6 4" fill="currentColor" aria-hidden="true">
               <path d="M3 0.5L5.5 3.5H0.5Z" />
@@ -72,7 +68,7 @@ export function SpeechControlsView({ audio, loading = false }: { audio?: HTMLAud
           </button>
           <button type="button" className="speech-rate-btn speech-rate-btn--down"
             title="Уменьшить скорость" aria-label="Уменьшить скорость"
-            disabled={!audio || currentIndex <= 0}
+            disabled={currentIndex <= 0}
             onClick={stepDown}>
             <svg width="6" height="4" viewBox="0 0 6 4" fill="currentColor" aria-hidden="true">
               <path d="M3 3.5L0.5 0.5H5.5Z" />
