@@ -771,7 +771,7 @@ export function createRecordingSession(host: SessionHost) {
     }));
   }
 
-  async function processRecordedAudio(audioBlob: Blob, generation: number, signal: AbortSignal, initialText?: string) {
+  async function processRecordedAudio(audioBlob: Blob, generation: number, signal: AbortSignal, initialText?: string, initialError?: string) {
 
     const workflowStartedAt = performance.now();
     let stageStartedAt = workflowStartedAt;
@@ -791,6 +791,7 @@ export function createRecordingSession(host: SessionHost) {
     const history = createRunHistoryRepository(config.historyMaxItems);
     const result = await runRecordingWorkflow(audioBlob, {
       initialText,
+      initialError,
       history: history.repository,
       transcription: transcriptionProvider,
       postProcessor: textPostProcessor,
@@ -881,11 +882,15 @@ export function createRecordingSession(host: SessionHost) {
         // Claude Code keeps recording for the tail so the last words are not cut off.
         await waitForStopTail(stopRequestedAtMs, afterStopMs, controller.signal);
         if (generation !== recordingGeneration || controller.signal.aborted) throw new DOMException('Запись отменена', 'AbortError');
-        const text = await invokeCommand(invoke, 'stop_claude_dictation', { runId: host.runId });
+        // A failed stop (nothing recognised, no text in time) still goes through the
+        // workflow, so the run and its error are recorded in history.
+        const spoken = await invokeCommand(invoke, 'stop_claude_dictation', { runId: host.runId })
+          .then(text => ({ text, error: undefined }), error => ({ text: '', error: errorMessage(error) }));
+        if (spoken.error !== undefined) await invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
         const audioBlob = await audio;
         host.onRecordingReleased();
         if (generation !== recordingGeneration || controller.signal.aborted) return;
-        await processRecordedAudio(audioBlob, generation, controller.signal, text);
+        await processRecordedAudio(audioBlob, generation, controller.signal, spoken.text, spoken.error);
       } catch (error) {
         await invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
         host.onRecordingReleased();

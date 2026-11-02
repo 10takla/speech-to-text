@@ -228,7 +228,13 @@ export async function runScenarioTree(audio: Blob, scenario: Scenario, dependenc
 
   dependencies.onStage('Выполнение сценария…');
   let result: Data | null = null;
-  try { result = await lane(scenario.steps, dependencies.initialText === undefined ? { type: 'audio', audio, recording: true } : { type: 'text', text: dependencies.initialText }, true); }
+  try {
+    if (dependencies.initialError) {
+      const source = scenario.steps.find(step => step.type === 'claudeCode' || step.type === 'selectedText');
+      if (source) mark(source, 'error', undefined, dependencies.initialError);
+      throw new Error(dependencies.initialError);
+    }
+    result = await lane(scenario.steps, dependencies.initialText === undefined ? { type: 'audio', audio, recording: true } : { type: 'text', text: dependencies.initialText }, true); }
   catch (error) {
     if (!signal?.aborted) errors.push(errorMessage(error));
   }

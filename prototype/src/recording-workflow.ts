@@ -21,6 +21,8 @@ type WorkflowSettings = Pick<AppSettings, 'historyMaxItems'> & ScenarioWorkflowS
 
 export interface RecordingWorkflowDependencies {
   initialText?: string;
+  // The text source failed (e.g. Claude Code heard nothing): the run is recorded in history as that step's error.
+  initialError?: string;
   history: HistoryRepository;
   transcription: TranscriptionProvider;
   postProcessor: TextPostProcessor;
@@ -204,6 +206,7 @@ export async function runRecordingWorkflow(
     let allRemoved: TimeRange[] = [];
     try {
       if (dependencies.initialText !== undefined) {
+        if (dependencies.initialError) throw new Error(dependencies.initialError);
         if (!transcribedText.trim()) throw new Error(scenario.steps[transcriptionIndex]?.type === 'selectedText' ? 'Нет выделенного текста.' : 'Речь не распознана.');
         persistStepStatus(transcriptionIndex, 'success', undefined, { text: transcribedText, status: 'transcribed' });
       } else {
