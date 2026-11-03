@@ -263,8 +263,9 @@ export function normalizeSettings(value: unknown): AppSettings {
       if (scenario.id !== 'default-scenario' && !scenario.name.startsWith('По умолчанию')) continue;
       const copyIndex = scenario.steps.findIndex(step => step.type === 'copy');
       const copy = scenario.steps[copyIndex];
-      const paste = scenario.steps[copyIndex + 1];
-      if (copy && paste?.type === 'paste' && !copy.parallelGroup && !paste.parallelGroup) {
+      // Adjacent on either side: newer defaults list paste first.
+      const paste = [scenario.steps[copyIndex + 1], scenario.steps[copyIndex - 1]].find(step => step?.type === 'paste');
+      if (copy && paste && !copy.parallelGroup && !paste.parallelGroup) {
         copy.parallelGroup = paste.parallelGroup = 'default-delivery';
       }
     }
@@ -327,6 +328,16 @@ export function normalizeSettings(value: unknown): AppSettings {
       if (postprocessing?.prompt === LEGACY_VOICE_ANSWER_PROMPT) postprocessing.prompt = VOICE_ANSWER_PROMPT;
     }
   }
+  // The output queue runs a group in step order: paste no longer waits for the
+  // copy's history updates. Only the shipped delivery group is reordered.
+  if (storedScenarioVersion < 25) for (const scenario of scenarios) {
+    const steps = scenario.steps;
+    const copyIndex = steps.findIndex(step => step.type === 'copy' && step.parallelGroup === 'default-delivery');
+    const paste = steps[copyIndex + 1];
+    if (copyIndex >= 0 && paste?.type === 'paste' && paste.parallelGroup === 'default-delivery') {
+      steps.splice(copyIndex, 2, paste, steps[copyIndex]);
+    }
+  }
   const activeScenarioId = scenarios.some(scenario => scenario.id === requestedScenarioId)
     ? requestedScenarioId
     : scenarios[0]?.id ?? '';
@@ -381,7 +392,7 @@ export function normalizeSettings(value: unknown): AppSettings {
     scenarios,
     activeScenarioId,
     androidScenarioId,
-    scenarioVersion: 24,
+    scenarioVersion: 25,
   };
 }
 
@@ -428,7 +439,7 @@ export function defaultSettings(): AppSettings {
     scenarios: [scenario, createVoiceAnswerScenario(), ...(!isAndroid ? [createSelectedTextSpeechScenario(), createClaudeCodeScenario()] : [])],
     activeScenarioId: scenario.id,
     androidScenarioId: scenario.id,
-    scenarioVersion: 24,
+    scenarioVersion: 25,
   };
 }
 

@@ -64,6 +64,15 @@ pub fn run() {
     // Network crates trace every WebSocket frame: that floods the log and the overlay console.
     let log_plugin = tauri_plugin_log::Builder::default()
         .targets(targets)
+        // Milliseconds: a whole paste or recording start fits into one second.
+        .format(|out, message, record| {
+            let now = tauri_plugin_log::TimezoneStrategy::UseLocal.get_now();
+            out.finish(format_args!(
+                "[{:04}-{:02}-{:02}][{:02}:{:02}:{:02}.{:03}][{}][{}] {}",
+                now.year(), u8::from(now.month()), now.day(), now.hour(), now.minute(), now.second(),
+                now.millisecond(), record.target(), record.level(), message
+            ))
+        })
         .level_for("tungstenite", log::LevelFilter::Info)
         .level_for("tokio_tungstenite", log::LevelFilter::Info)
         .level_for("rustls", log::LevelFilter::Info)

@@ -95,6 +95,20 @@ describe('settings parsing', () => {
     expect(loadSettings().scenarios[0].steps.filter(step => step.type === 'copy' || step.type === 'paste')
       .map(step => step.parallelGroup)).toEqual(['default-delivery', 'default-delivery']);
   });
+  it('moves paste ahead of copy in the shipped delivery group once', () => {
+    const settings = defaultSettings();
+    expect(settings.scenarios[0].steps.filter(step => step.parallelGroup === 'default-delivery').map(step => step.type))
+      .toEqual(['paste', 'copy']);
+    settings.scenarioVersion = 24;
+    const steps = settings.scenarios[0].steps;
+    const paste = steps.findIndex(step => step.type === 'paste');
+    steps.splice(paste, 2, steps[paste + 1], steps[paste]);
+    const migrated = normalizeSettings(settings);
+    expect(migrated.scenarios[0].steps.filter(step => step.parallelGroup === 'default-delivery').map(step => step.type))
+      .toEqual(['paste', 'copy']);
+    expect(normalizeSettings(migrated).scenarios[0].steps.filter(step => step.parallelGroup === 'default-delivery')
+      .map(step => step.type)).toEqual(['paste', 'copy']);
+  });
   it('preserves model generation settings across saving and import', () => {
     const settings = defaultSettings();
     const step = settings.scenarios[0].steps.find(step => step.type === 'postprocess')!;

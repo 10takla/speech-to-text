@@ -139,16 +139,48 @@ fn pump_messages() {
     }
 }
 
-fn retry_clipboard<T>(operation: impl FnMut() -> windows::core::Result<T>) -> Result<T, String> {
-    let until = Instant::now() + CLIPBOARD_RETRY_TIMEOUT;
-    retry_clipboard_with(operation, || {
+// The process that has the clipboard open right now, for diagnostics. None when
+// nobody has it open any more or the holder has no window (OLE, services).
+fn clipboard_holder() -> Option<String> {
+    use windows_sys::Win32::System::DataExchange::GetOpenClipboardWindow;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let window = unsafe { GetOpenClipboardWindow() };
+    if window.is_null() { return None; }
+    let mut process = 0;
+    unsafe { GetWindowThreadProcessId(window, &mut process) };
+    (process != 0).then(|| process_name(process))
+}
+
+fn retry_clipboard<T>(mut operation: impl FnMut() -> windows::core::Result<T>) -> Result<T, String> {
+    let started = Instant::now();
+    let until = started + CLIPBOARD_RETRY_TIMEOUT;
+    let mut busy = 0u32;
+    let mut holders: Vec<String> = Vec::new();
+    let result = retry_clipboard_with(|| {
+        let result = operation();
+        if result.as_ref().is_err_and(|error| error.code() == CLIPBRD_E_CANT_OPEN) {
+            busy += 1;
+            let holder = clipboard_holder().unwrap_or_else(|| "не определён".into());
+            if holders.last() != Some(&holder) { holders.push(holder); }
+        }
+        result
+    }, || {
         if Instant::now() >= until {
             return false;
         }
         pump_messages();
         std::thread::sleep(Duration::from_millis(10));
         true
-    })
+    });
+    if busy > 0 {
+        let holders = holders.join(" → ");
+        match &result {
+            Ok(_) => log::info!("clipboard: был занят, {busy} неудачных попыток за {} ms, держал: {holders}", started.elapsed().as_millis()),
+            Err(error) => log::warn!("clipboard: занят, {busy} попыток за {} ms (лимит {} ms), держал: {holders}; ошибка: {error}",
+                started.elapsed().as_millis(), CLIPBOARD_RETRY_TIMEOUT.as_millis()),
+        }
+    }
+    result
 }
 
 fn retry_clipboard_with<T>(
@@ -287,7 +319,36 @@ struct SavedClipboard {
     formats: u32,
 }
 
+// Reading the data of a snapshot opens the clipboard lazily, inside the WinRT
+// request, so a busy clipboard surfaces there as an error text rather than
+// through `retry_clipboard`. Retry it the same way.
 fn snapshot_clipboard() -> Result<(u32, SavedClipboard), String> {
+    let started = Instant::now();
+    let mut busy = 0u32;
+    let mut holders: Vec<String> = Vec::new();
+    loop {
+        match snapshot_clipboard_once() {
+            Err(error) if error.contains("0x800401D0") && started.elapsed() < CLIPBOARD_RETRY_TIMEOUT => {
+                check_cancelled()?;
+                busy += 1;
+                let holder = clipboard_holder().unwrap_or_else(|| "не определён".into());
+                if holders.last() != Some(&holder) { holders.push(holder); }
+                pump_messages();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result => {
+                if busy > 0 {
+                    log::warn!("clipboard: чтение содержимого, {busy} неудачных попыток за {} ms (лимит {} ms), держал: {}; итог: {}",
+                        started.elapsed().as_millis(), CLIPBOARD_RETRY_TIMEOUT.as_millis(), holders.join(" → "),
+                        result.as_ref().err().map_or("успех", |error| error.as_str()));
+                }
+                return result;
+            }
+        }
+    }
+}
+
+fn snapshot_clipboard_once() -> Result<(u32, SavedClipboard), String> {
     loop {
         check_cancelled()?;
         let sequence = clipboard_sequence();
@@ -666,6 +727,9 @@ pub fn with_text_for_paste(
         "paste: completed in {} ms, success={}",
         started.elapsed().as_millis(), result.is_ok()
     );
+    if let Err(error) = &result {
+        log::warn!("paste: failed: {error}");
+    }
     result
 }
 

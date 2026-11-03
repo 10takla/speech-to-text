@@ -166,8 +166,10 @@ export function createDefaultScenario(
     { ...createStep('startRecording', hotkey, sound, stepSettings, soundSettings, hotkeyPause), id: 'default-step-start' },
     { ...createStep('transcribe', hotkey, sound, stepSettings), id: 'default-step-transcribe' },
     { ...createStep('postprocess', hotkey, sound, stepSettings), id: 'default-step-postprocess', enabled: includePostprocessing },
-    { ...createStep('copy'), id: 'default-step-copy', parallelGroup: 'default-delivery' },
+    // Paste first: the shared output queue runs the group in step order, and the
+    // copy waits for Windows history updates the inserted text does not need.
     { ...createStep('paste', hotkey, sound, stepSettings, soundSettings), id: 'default-step-paste', parallelGroup: 'default-delivery' },
+    { ...createStep('copy'), id: 'default-step-copy', parallelGroup: 'default-delivery' },
   ];
   steps[1].transcription!.prompt ||= VOICE_TRANSCRIPTION_PROMPT;
   steps[2].postprocessing!.prompt ||= VOICE_INPUT_CLEANUP_PROMPT;

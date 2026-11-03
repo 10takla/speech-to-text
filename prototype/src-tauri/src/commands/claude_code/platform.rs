@@ -39,7 +39,9 @@ struct Session { child: ConsoleProcess, _job: ProcessJob, pid: u32, hwnd: isize,
     // Last sign of life from the owning run: start, polling while recording, stop.
     touched: Instant,
     // Live text polls this recording that did not find the prompt.
-    live_misses: u32 }
+    live_misses: u32,
+    // Set by the hook server the moment the transcript file is written.
+    arrived: std::sync::Arc<(Mutex<bool>, std::sync::Condvar)> }
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 // AttachConsole is process-wide. Never use it concurrently with another transport.
 static CONSOLE: Mutex<()> = Mutex::new(());
@@ -201,7 +203,7 @@ fn screen(session: &Session) -> Result<Vec<u16>, String> {
 
 // Receives Claude's UserPromptSubmit hook, stores the prompt as transcript.txt
 // in the session folder and blocks the prompt so it never reaches the model.
-fn start_hook_server(dir: PathBuf) -> Result<String, String> {
+fn start_hook_server(dir: PathBuf, arrived: std::sync::Arc<(Mutex<bool>, std::sync::Condvar)>) -> Result<String, String> {
     use std::hash::{BuildHasher, Hasher};
     use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -235,7 +237,10 @@ fn start_hook_server(dir: PathBuf) -> Result<String, String> {
                 log::info!("Claude Code hook received prompt {}", prompt.as_deref().map(super::super::clipboard_history::preview).unwrap_or_else(|| "(нет поля prompt)".into()));
                 if let Some(text) = prompt.filter(|text| !text.is_empty()) {
                     let temporary = dir.join("transcript.tmp");
-                    if std::fs::write(&temporary, text).is_ok() { let _ = std::fs::rename(&temporary, dir.join("transcript.txt")); }
+                    if std::fs::write(&temporary, text).is_ok() && std::fs::rename(&temporary, dir.join("transcript.txt")).is_ok() {
+                        if let Ok(mut flag) = arrived.0.lock() { *flag = true; }
+                        arrived.1.notify_all();
+                    }
                 }
                 let body = r#"{"decision":"block","reason":"[dictation] captured"}"#;
                 format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len())
@@ -333,7 +338,8 @@ fn ensure(slot: &mut Option<Session>, visible: bool) -> Result<&mut Session, Str
         std::fs::write(dir.join("LICENSE"), include_str!("../claude-dictate-LICENSE")).map_err(|e| e.to_string())?;
         // An HTTP hook avoids starting Git Bash and PowerShell for every prompt
         // (about half a second before the transcript arrives).
-        let hook = start_hook_server(dir.clone())?;
+        let arrived = std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let hook = start_hook_server(dir.clone(), arrived.clone())?;
         // Only this session: no telemetry, error reports or auto-updates. Sign-in
         // and voice transcription are essential traffic and keep working.
         let settings = serde_json::json!({"language":"ru", "tui":"default", "voice":{"enabled":true,"mode":"tap"},
@@ -369,8 +375,19 @@ fn ensure(slot: &mut Option<Session>, visible: bool) -> Result<&mut Session, Str
             sleep(Duration::from_millis(100));
         }
         let Some((pid, hwnd)) = found else { let status = child.try_wait().ok().flatten(); let _ = child.kill(); child.wait(); return Err(format!("Не найдена классическая консоль Claude Code (код завершения: {status:?}).")); };
+        // Under CPU load Claude opened its microphone up to ~0.9 s after Space
+        // instead of ~0.1 s. Above-normal priority keeps it responsive; it only
+        // matters while it works, idle it takes no CPU.
+        unsafe {
+            use windows_sys::Win32::System::Threading::{OpenProcess, SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS, PROCESS_SET_INFORMATION};
+            let process = OpenProcess(PROCESS_SET_INFORMATION, 0, pid);
+            if process.is_null() || SetPriorityClass(process, ABOVE_NORMAL_PRIORITY_CLASS) == 0 {
+                log::warn!("Claude Code: {}", failure("не удалось повысить приоритет"));
+            }
+            if !process.is_null() { CloseHandle(process); }
+        }
         unsafe { ShowWindow(hwnd as HWND, if visible { SW_SHOW } else { SW_HIDE }); if !visible && !target.is_null() { SetForegroundWindow(target); } }
-        let mut session = Session { child, _job: job, pid, hwnd, dir, owner: None, mic_seen: false, touched: Instant::now(), live_misses: 0 };
+        let mut session = Session { child, _job: job, pid, hwnd, dir, owner: None, mic_seen: false, touched: Instant::now(), live_misses: 0, arrived };
         // Ready means Claude has drawn its prompt. The visible console is where the
         // user signs in, so it has no prompt yet and is not waited for. The limit
         // only guards against a hung Claude; readiness itself is the screen.
@@ -489,6 +506,7 @@ pub fn stop(run_id: &str) -> Result<String, String> {
         log::info!("Claude Code stop: microphone active={mic}, transcript already present={ready}");
         if !ready && mic { key(s, 0x20, 0x20, 0)?; }
     }
+    let arrived = SESSION.lock().map_err(|e| e.to_string())?.as_ref().map(|s| s.arrived.clone()).ok_or("Сеанс Claude Code закрыт")?;
     let started = Instant::now();
     // After the mic stops Claude finalizes the transcript on its server and, in
     // tap mode, submits it by itself when it has 3+ words. The interim text on
@@ -551,7 +569,11 @@ pub fn stop(run_id: &str) -> Result<String, String> {
                 log::warn!("Claude Code returned no transcript in 15 s; screen ends with {}", last_screen.as_deref().map(screen_tail).unwrap_or_default());
                 let _ = key(s, 0x1b, 0x1b, 0); s.owner = None; return Err("Claude Code не вернул текст. Проверьте окно диктовки.".into()); }
         }
-        sleep(Duration::from_millis(50));
+        // The 50 ms only bounds how soon the screen checks above run again; the
+        // transcript itself wakes this wait through the hook server.
+        if let Ok(mut flag) = arrived.0.lock() {
+            if *flag { *flag = false; } else { let _ = arrived.1.wait_timeout(flag, Duration::from_millis(50)); }
+        }
     }
 }
 

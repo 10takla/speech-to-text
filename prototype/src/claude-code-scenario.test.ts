@@ -12,7 +12,7 @@ it('repairs the saved early single-step Claude scenario without changing its tri
   claude.steps[0].hotkey = 'F8';
   claude.enabled = true;
   const repaired = normalizeSettings(settings).scenarios.find(item => item.id === claude.id)!;
-  expect(repaired.steps.map(step => step.type)).toEqual(['claudeCode', 'postprocess', 'copy', 'paste']);
+  expect(repaired.steps.map(step => step.type)).toEqual(['claudeCode', 'postprocess', 'paste', 'copy']);
   expect(repaired.steps[0].hotkey).toBe('F8');
   expect(repaired.enabled).toBe(true);
   expect(validateScenario(repaired)).toBeNull();
@@ -36,7 +36,7 @@ it('preserves and registers the Claude Code trigger and detects conflicts', () =
 it('adds an ordinary voice-input scenario with Claude Code replacing capture and transcription', () => {
   const settings = defaultSettings();
   const scenario = settings.scenarios.find(item => item.id === 'claude-code-test')!;
-  expect(scenario.steps.map(step => step.type)).toEqual(['claudeCode', 'postprocess', 'copy', 'paste']);
+  expect(scenario.steps.map(step => step.type)).toEqual(['claudeCode', 'postprocess', 'paste', 'copy']);
   expect(scenario.steps[1].enabled).toBe(false);
   expect(validateScenario(scenario)).toBeNull();
   expect(isScenarioTemplate(scenario)).toBe(false);
