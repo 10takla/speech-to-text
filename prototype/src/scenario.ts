@@ -8,7 +8,7 @@ import type { GeminiGenerationSettings } from './provider-models';
 import { normalizeGoogleCloudSettings, type GoogleCloudSettings } from './google-cloud/settings';
 import { normalizeGeminiTranscriptionSettings, type GeminiTranscriptionSettings } from './gemini-transcription/settings';
 import { VOICE_TRANSCRIPTION_PROMPT, VOICE_INPUT_CLEANUP_PROMPT, VOICE_ANSWER_PROMPT } from './scenario-prompts';
-import { DEFAULT_AFTER_STOP_MS, normalizeAfterStopMs } from './recording-stop';
+import { DEFAULT_AFTER_STOP_MS, DEFAULT_EMPTY_PROMPT_WAIT_MS, DEFAULT_FIRST_WORD_WAIT_MS, normalizeAfterStopMs, normalizeEmptyPromptWaitMs, normalizeFirstWordWaitMs } from './recording-stop';
 import { AUTO_SPEECH_LANGUAGE, normalizeSpeechSettings, type SystemSpeechSettings } from './speech-settings';
 import { normalizeSpeechProvider, normalizeSpeechProviders, speechConfigurationError, type SpeechProvider, type SpeechProviderSettings } from './speech-provider-settings';
 
@@ -57,6 +57,10 @@ export interface ScenarioStep {
   afterStopMs?: number;
   // Claude Code: show the interim transcript from its prompt in the overlay.
   liveTranscription?: boolean;
+  // Claude Code: how long the stop waits for the first recognised word, ms.
+  firstWordWaitMs?: number;
+  // Claude Code: how long the prompt stays empty after the stop before «no speech», ms.
+  emptyPromptWaitMs?: number;
   sound?: ScenarioStartSound;
   soundEnabled?: boolean;
   soundProfile?: ScenarioSoundProfile;
@@ -318,7 +322,7 @@ export function createStep(
   // Actions and speech may show their text in the overlay: off for actions, on for speech.
   if (contract.category === 'action') step.showTextInOverlay = false;
   if (type === 'speak') step.showTextInOverlay = true;
-  if (type === 'claudeCode') { step.hotkey = 'Control+Shift+KeyD'; step.afterStopMs = DEFAULT_AFTER_STOP_MS; step.liveTranscription = true; }
+  if (type === 'claudeCode') { step.hotkey = 'Control+Shift+KeyD'; step.afterStopMs = DEFAULT_AFTER_STOP_MS; step.firstWordWaitMs = DEFAULT_FIRST_WORD_WAIT_MS; step.emptyPromptWaitMs = DEFAULT_EMPTY_PROMPT_WAIT_MS; step.liveTranscription = true; }
   if (type === 'selectedText') step.hotkey = 'Control+Shift+KeyS';
   if (type === 'startRecording') {
     step.afterStopMs = DEFAULT_AFTER_STOP_MS;
@@ -496,6 +500,8 @@ function normalizeStep(
   if (step.type === 'claudeCode') {
     step.hotkey = typeof value.hotkey === 'string' ? value.hotkey : 'Control+Shift+KeyD';
     step.afterStopMs = normalizeAfterStopMs(value.afterStopMs);
+    step.firstWordWaitMs = normalizeFirstWordWaitMs(value.firstWordWaitMs);
+    step.emptyPromptWaitMs = normalizeEmptyPromptWaitMs(value.emptyPromptWaitMs);
     step.liveTranscription = value.liveTranscription !== false;
   }
   if (step.type === 'startRecording') {

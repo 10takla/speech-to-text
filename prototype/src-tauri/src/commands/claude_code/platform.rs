@@ -531,7 +531,10 @@ pub fn start(run_id: &str) -> Result<(), String> {
     s.owner = Some(run_id.to_owned()); s.mic_seen = false; s.touched = Instant::now(); s.live_misses = 0;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        if microphone_active(s.pid).unwrap_or(false) { s.mic_seen = true; log::info!("Claude Code recording started: prompt cleared in {} ms, microphone opened {} ms after Space", cleared.as_millis(), (begun.elapsed() - cleared).as_millis()); return Ok(()); }
+        if microphone_active(s.pid).unwrap_or(false) {
+            s.mic_seen = true;
+            log::info!("Claude Code recording started: prompt cleared in {} ms, microphone opened {} ms after Space", cleared.as_millis(), (begun.elapsed() - cleared).as_millis());            return Ok(());
+        }
         sleep(Duration::from_millis(40));
     }
     let _ = key(s, 0x1b, 0x1b, 0); s.owner = None;
@@ -552,8 +555,9 @@ pub fn finished(run_id: &str, live: bool) -> Result<Poll, String> {
 // `tail` is what is left of the step's after-stop time: Claude keeps listening
 // that long after the stop press. The checks run inside it, so Space goes out
 // right at its end instead of after them.
-pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
+pub fn stop(run_id: &str, tail: Duration, first_word: Duration, empty_prompt: Duration) -> Result<String, String> {
     let deadline = Instant::now() + tail;
+    let first_word_deadline = Instant::now() + first_word;
     let index = owned_by(run_id)?;
     let pid = {
         let slot = lock(index)?;
@@ -564,8 +568,39 @@ pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
     // Checked as late as possible: Claude may switch the microphone off itself, and
     // Space then would start a new recording. The check takes a few ms.
     sleep(deadline.saturating_duration_since(Instant::now()).saturating_sub(Duration::from_millis(25)));
-    let mic = microphone_active(pid)?;
+    let mut mic = microphone_active(pid)?;
     sleep(deadline.saturating_duration_since(Instant::now()));
+    // Console Claude keeps only what its server has already recognised: stopped
+    // before the first word, it discards the recording even with speech in it.
+    // So with no word on screen yet, wait for one before Space. 0 turns the wait off.
+    if mic && !first_word.is_zero() {
+        let mut waited = false;
+        loop {
+            let mut slot = lock(index)?;
+            let s = slot.as_mut().ok_or("Сеанс Claude Code закрыт")?;
+            if s.owner.as_deref() != Some(run_id) { return Err("Диктовка отменена".into()); }
+            s.touched = Instant::now();
+            if s.dir.join("transcript.txt").exists() { break; }
+            // An unknown layout (no prompt found) is not waited on.
+            let empty = screen(s).ok().as_deref().and_then(prompt_text).is_some_and(|text| text.is_empty());
+            if !empty {
+                if waited { log::info!("Claude Code: first word appeared {} ms after the stop deadline", deadline.elapsed().as_millis()); }
+                break;
+            }
+            if Instant::now() >= first_word_deadline {
+                if microphone_active(s.pid).unwrap_or(false) { let _ = key(s, 0x20, 0x20, 0); }
+                log::info!("Claude Code: no word {} ms after stop, no speech", first_word.as_millis());
+                s.owner = None;
+                return Err("Речь не распознана.".into());
+            }
+            waited = true;
+            drop(slot);
+            sleep(Duration::from_millis(40));
+        }
+        // Claude may have switched the microphone off itself meanwhile, and Space
+        // then would start a new recording.
+        if waited { mic = microphone_active(pid)?; }
+    }
     {
         let slot = lock(index)?;
         let s = slot.as_ref().ok_or("Сеанс Claude Code закрыт")?;
@@ -628,10 +663,7 @@ pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
                     if last_screen.as_ref() != Some(&current) { last_screen = Some(current); stable_since = Instant::now(); }
                     // Nothing was said (or a quick on/off): the prompt stays empty, no
                     // hook ever fires, and waiting for the 15 s timeout looks like a hang.
-                    // A short phrase can also show nothing until Claude's server returns
-                    // it, which took up to ~1.7 s, so an empty prompt is not trusted sooner.
-                    else if stable_since.elapsed() >= Duration::from_millis(1500) && started.elapsed() >= Duration::from_millis(4000)
-                        && prompt_text(&current).as_deref() == Some("") {
+                    else if stable_since.elapsed() >= empty_prompt && prompt_text(&current).as_deref() == Some("") {
                         log::info!("Claude Code: prompt still empty {} ms after stop, no speech; screen ends with {}",
                             started.elapsed().as_millis(), screen_tail(&current));
                         s.owner = None;
@@ -730,7 +762,7 @@ mod tests {
             sleep(Duration::from_millis(300));
             key(s, 0x0d, 0x0d, 0).unwrap();
         }
-        let result = stop("hook-smoke", Duration::ZERO);
+        let result = stop("hook-smoke", Duration::ZERO, Duration::ZERO, Duration::from_millis(1500));
         let _ = cancel(Some("hook-smoke"));
         if let Ok(mut slot) = lock(MAIN) {
             if let Some(mut s) = slot.take() { unsafe { PostMessageW(s.hwnd as HWND, WM_CLOSE, 0, 0); } s.child.wait(); }

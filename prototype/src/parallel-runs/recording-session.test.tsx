@@ -77,7 +77,7 @@ it('records through Claude with the overlay visible and passes native text to th
   // Claude keeps recording for the step's after-stop tail (150 ms by default);
   // the native side waits it out, so the stop is sent right away.
   await vi.advanceTimersByTimeAsync(0);
-  expect(item.invoke).toHaveBeenCalledWith('stop_claude_dictation', { runId: 'claude', afterStopMs: 150 });
+  expect(item.invoke).toHaveBeenCalledWith('stop_claude_dictation', { runId: 'claude', afterStopMs: 150, firstWordWaitMs: 800, emptyPromptWaitMs: 1000 });
   expect(workflows[0].dependencies.initialText).toBe('Проверка диктовки');
   // The parallel capture ends on the same stop boundary and goes to history.
   expect(item.capture.stop).toHaveBeenCalledWith(expect.any(Number), 150, expect.any(AbortSignal));

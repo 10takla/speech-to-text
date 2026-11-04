@@ -13,7 +13,7 @@ import type { AudioCapturePort, TextOutputPort } from '../ports';
 import { createLiveTranscriber, type LiveTranscriber } from '../live-transcription';
 import { getScenarioReadinessError, runRecordingWorkflow } from '../recording-workflow';
 import { isAndroid, androidCall } from '../android-runtime';
-import { normalizeAfterStopMs, waitForStopTail } from '../recording-stop';
+import { normalizeAfterStopMs, normalizeEmptyPromptWaitMs, normalizeFirstWordWaitMs, waitForStopTail } from '../recording-stop';
 import { decodeAudio } from '../audio-decoding';
 import { recordingPreviewFragments, retainedPreviewSegments } from '../recording-transcript';
 import { overlayRetention } from '../overlay-retention';
@@ -880,8 +880,10 @@ export function createRecordingSession(host: SessionHost) {
     if (state !== 'recording' || pausePending || startingRecording) return;
     if (claudeRecording && invoke) {
       const stopRequestedAtMs = Date.now();
-      const afterStopMs = normalizeAfterStopMs(config.scenarios
-        .find(item => item.id === config.activeScenarioId)?.steps[0]?.afterStopMs);
+      const claudeStep = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0];
+      const afterStopMs = normalizeAfterStopMs(claudeStep?.afterStopMs);
+      const firstWordWaitMs = normalizeFirstWordWaitMs(claudeStep?.firstWordWaitMs);
+      const emptyPromptWaitMs = normalizeEmptyPromptWaitMs(claudeStep?.emptyPromptWaitMs);
       const captured = stopClaudePolling(true);
       claudeRecording = false;
       const generation = recordingGeneration;
@@ -904,7 +906,7 @@ export function createRecordingSession(host: SessionHost) {
         const tail = Math.max(0, stopRequestedAtMs + afterStopMs - Date.now());
         // A failed stop (nothing recognised, no text in time) still goes through the
         // workflow, so the run and its error are recorded in history.
-        const spoken = await invokeCommand(invoke, 'stop_claude_dictation', { runId: host.runId, afterStopMs: tail })
+        const spoken = await invokeCommand(invoke, 'stop_claude_dictation', { runId: host.runId, afterStopMs: tail, firstWordWaitMs, emptyPromptWaitMs })
           .then(text => ({ text, error: undefined }), error => ({ text: '', error: errorMessage(error) }));
         if (spoken.error !== undefined) await invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
         const audioBlob = await audio;
