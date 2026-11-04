@@ -894,7 +894,10 @@ export function createRecordingSession(host: SessionHost) {
         ? getAudioCapture().stop(stopRequestedAtMs, afterStopMs, controller.signal)
           .then(bytes => new Blob([bytes], { type: 'audio/wav' }))
           .catch(error => { console.warn('Не удалось сохранить аудио записи Claude Code:', error); return new Blob(); })
-        : Promise.resolve(new Blob());
+        : new Promise<Blob>(resolve => window.setTimeout(() => resolve(new Blob()), afterStopMs));
+      // The next recording may start once the microphone is free: it records in
+      // the spare Claude console while this one finishes the phrase.
+      void audio.then(() => host.onRecordingReleased());
       try {
         // Claude Code keeps recording for the tail so the last words are not cut off.
         // The native side waits it out, doing its checks meanwhile.

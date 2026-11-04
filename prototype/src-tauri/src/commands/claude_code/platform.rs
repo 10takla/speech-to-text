@@ -42,7 +42,24 @@ struct Session { child: ConsoleProcess, _job: ProcessJob, pid: u32, hwnd: isize,
     live_misses: u32,
     // Set by the hook server the moment the transcript file is written.
     arrived: std::sync::Arc<(Mutex<bool>, std::sync::Condvar)> }
-static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+// Two hidden consoles: while one finishes the previous phrase (Claude finalizes
+// it on its server for about half a second after the stop), the next recording
+// starts at once in the other. One console cannot do both: a new recording
+// clears its prompt, which still holds the previous phrase.
+const CONSOLES: usize = 2;
+static SESSIONS: [Mutex<Option<Session>>; CONSOLES] = [Mutex::new(None), Mutex::new(None)];
+// The dictation console the user signs in through, shown by «Открыть Claude Code».
+const MAIN: usize = 0;
+fn lock(index: usize) -> Result<std::sync::MutexGuard<'static, Option<Session>>, String> {
+    SESSIONS[index].lock().map_err(|e| e.to_string())
+}
+// The console that records or finishes the given run.
+fn owned_by(run_id: &str) -> Result<usize, String> {
+    for index in 0..CONSOLES {
+        if lock(index)?.as_ref().is_some_and(|s| s.owner.as_deref() == Some(run_id)) { return Ok(index); }
+    }
+    Err("Диктовка отменена".into())
+}
 // AttachConsole is process-wide. Never use it concurrently with another transport.
 static CONSOLE: Mutex<()> = Mutex::new(());
 fn wide(value: &str) -> Vec<u16> { value.encode_utf16().chain(Some(0)).collect() }
@@ -439,39 +456,67 @@ fn check_auth(exe: &std::path::Path) -> Result<(), String> {
 // Keeps the dictation console ready while some scenario uses Claude Code, so
 // the first recording does not wait for its start, and closes it otherwise.
 pub fn prepare(enabled: bool) -> Result<(), String> {
-    let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
-    if enabled { return ensure(&mut slot, false).map(|_| ()); }
-    if slot.as_ref().is_some_and(|session| session.owner.is_none()) {
-        if let Some(mut session) = slot.take() {
-            log::info!("Claude Code: no scenario uses it, closing the dictation console");
-            let _ = session.child.kill(); session.child.wait();
+    if enabled {
+        ensure(&mut *lock(MAIN)?, false)?;
+        // The spare console only speeds up back-to-back recordings; start it
+        // without delaying the main one. A failure is reported on its first use.
+        std::thread::spawn(|| {
+            for index in (0..CONSOLES).filter(|&index| index != MAIN) {
+                if let Ok(mut slot) = lock(index) {
+                    if let Err(error) = ensure(&mut slot, false) { log::warn!("Claude Code: spare console {index} not started: {error}"); }
+                }
+            }
+        });
+        return Ok(());
+    }
+    for index in 0..CONSOLES {
+        let mut slot = lock(index)?;
+        if slot.as_ref().is_some_and(|session| session.owner.is_none()) {
+            if let Some(mut session) = slot.take() {
+                log::info!("Claude Code: no scenario uses it, closing dictation console {index}");
+                let _ = session.child.kill(); session.child.wait();
+            }
         }
     }
     Ok(())
 }
 
-pub fn open(visible: bool) -> Result<(), String> { let mut slot = SESSION.lock().map_err(|e| e.to_string())?; ensure(&mut slot, visible).map(|_| ()) }
-pub fn running() -> Result<bool, String> { Ok(SESSION.lock().map_err(|e| e.to_string())?.as_ref().is_some_and(|s| unsafe { IsWindow(s.hwnd as HWND) != 0 })) }
+pub fn open(visible: bool) -> Result<(), String> { ensure(&mut *lock(MAIN)?, visible).map(|_| ()) }
+pub fn running() -> Result<bool, String> {
+    for index in 0..CONSOLES {
+        if lock(index)?.as_ref().is_some_and(|s| unsafe { IsWindow(s.hwnd as HWND) != 0 }) { return Ok(true); }
+    }
+    Ok(false)
+}
+
+// Whether the console is held by another live run. A run that ended without stop
+// or cancel (overlay reload, error mid-stop) must not lock it forever: the owner
+// polls every 250 ms while recording, and stop() keeps touching it.
+fn busy(s: &Session, run_id: &str) -> bool {
+    let Some(owner) = s.owner.as_deref() else { return false };
+    let registered = super::super::scenario_output::RUNS.lock().map(|runs| runs.contains_key(owner)).unwrap_or(false);
+    owner != run_id && registered && s.touched.elapsed() < Duration::from_secs(3)
+}
 
 pub fn start(run_id: &str) -> Result<(), String> {
-    let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
+    // A free running console first, then one still to start; the main one first.
+    let mut chosen = None;
+    'search: for pass in 0..2 {
+        for index in 0..CONSOLES {
+            let slot = lock(index)?;
+            if slot.as_ref().map_or(pass == 1, |s| !busy(s, run_id)) { chosen = Some((index, slot)); break 'search; }
+        }
+    }
+    let Some((index, mut slot)) = chosen else { return Err("Claude Code уже занят диктовкой.".into()) };
     let s = ensure(&mut slot, false)?;
     if let Some(owner) = s.owner.clone() {
-        // The console is shared by the whole app. A run that ended without stop or
-        // cancel (overlay reload, error mid-stop) must not lock it forever: the owner
-        // polls every 500 ms while recording, and stop() keeps touching it.
-        let registered = super::super::scenario_output::RUNS.lock().map(|runs| runs.contains_key(&owner)).unwrap_or(false);
-        let idle = s.touched.elapsed();
-        if owner != run_id && registered && idle < Duration::from_secs(3) {
-            return Err("Claude Code уже занят диктовкой.".into());
-        }
-        log::warn!("Claude Code: releasing stale dictation of run {owner} (registered={registered}, idle {} ms)", idle.as_millis());
+        log::warn!("Claude Code: releasing stale dictation of run {owner} on console {index} (idle {} ms)", s.touched.elapsed().as_millis());
         let _ = key(s, 0x1b, 0x1b, 0);
         s.owner = None;
     }
     let begun = Instant::now();
     let stale = std::fs::remove_file(s.dir.join("transcript.txt")).is_ok();
-    log::info!("Claude Code start: stale transcript removed={stale}");
+    log::info!("Claude Code start on console {index}: stale transcript removed={stale}");
     clear_prompt(s)?;
     let cleared = begun.elapsed();
     key(s, 0x20, 0x20, 0)?;
@@ -487,7 +532,7 @@ pub fn start(run_id: &str) -> Result<(), String> {
 }
 
 pub fn finished(run_id: &str, live: bool) -> Result<Poll, String> {
-    let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
+    let mut slot = lock(owned_by(run_id)?)?;
     let s = slot.as_mut().ok_or("Сеанс Claude Code закрыт")?;
     if s.owner.as_deref() != Some(run_id) { return Err("Диктовка отменена".into()); }
     s.touched = Instant::now();
@@ -501,8 +546,9 @@ pub fn finished(run_id: &str, live: bool) -> Result<Poll, String> {
 // right at its end instead of after them.
 pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
     let deadline = Instant::now() + tail;
+    let index = owned_by(run_id)?;
     let pid = {
-        let slot = SESSION.lock().map_err(|e| e.to_string())?;
+        let slot = lock(index)?;
         let s = slot.as_ref().ok_or("Сеанс Claude Code закрыт")?;
         if s.owner.as_deref() != Some(run_id) { return Err("Диктовка отменена".into()); }
         s.pid
@@ -513,14 +559,14 @@ pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
     let mic = microphone_active(pid)?;
     sleep(deadline.saturating_duration_since(Instant::now()));
     {
-        let slot = SESSION.lock().map_err(|e| e.to_string())?;
+        let slot = lock(index)?;
         let s = slot.as_ref().ok_or("Сеанс Claude Code закрыт")?;
         if s.owner.as_deref() != Some(run_id) { return Err("Диктовка отменена".into()); }
         let ready = s.dir.join("transcript.txt").exists();
         if !ready && mic { key(s, 0x20, 0x20, 0)?; }
         log::info!("Claude Code stop: microphone active={mic}, transcript already present={ready}");
     }
-    let arrived = SESSION.lock().map_err(|e| e.to_string())?.as_ref().map(|s| s.arrived.clone()).ok_or("Сеанс Claude Code закрыт")?;
+    let arrived = lock(index)?.as_ref().map(|s| s.arrived.clone()).ok_or("Сеанс Claude Code закрыт")?;
     let started = Instant::now();
     // After the mic stops Claude finalizes the transcript on its server and, in
     // tap mode, submits it by itself when it has 3+ words. The interim text on
@@ -536,7 +582,7 @@ pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
     let mut next_check = Instant::now();
     loop {
         {
-            let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
+            let mut slot = lock(index)?;
             let s = slot.as_mut().ok_or("Сеанс Claude Code закрыт")?;
             if s.owner.as_deref() != Some(run_id) { return Err("Диктовка отменена".into()); }
             s.touched = Instant::now();
@@ -550,9 +596,9 @@ pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
                     super::super::clipboard_history::preview(&text));
                 // The blocking hook restores the submitted prompt after exiting.
                 // Clear it in the background instead of delaying the transcript.
-                std::thread::spawn(|| {
+                std::thread::spawn(move || {
                     sleep(Duration::from_millis(700));
-                    if let Ok(slot) = SESSION.lock() {
+                    if let Ok(slot) = lock(index) {
                         if let Some(s) = slot.as_ref().filter(|s| s.owner.is_none()) { let _ = clear_prompt(s); }
                     }
                 });
@@ -596,16 +642,18 @@ pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
     }
 }
 
+// Without a run id: every console that has a dictation.
 pub fn cancel(run_id: Option<&str>) -> Result<(), String> {
-    let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
-    if let Some(s) = slot.as_mut() {
-        if run_id.is_some() && s.owner.as_deref() != run_id { return Ok(()); }
-        let result = key(s, 0x1b, 0x1b, 0);
+    let mut result = Ok(());
+    for index in 0..CONSOLES {
+        let mut slot = lock(index)?;
+        let Some(s) = slot.as_mut() else { continue };
+        if run_id.map_or(s.owner.is_none(), |run_id| s.owner.as_deref() != Some(run_id)) { continue; }
+        if let Err(error) = key(s, 0x1b, 0x1b, 0) { result = Err(error); }
         s.owner = None;
         let _ = std::fs::remove_file(s.dir.join("transcript.txt"));
-        result?;
     }
-    Ok(())
+    result
 }
 
 #[cfg(test)]
@@ -639,7 +687,7 @@ mod tests {
         let result = start("native-smoke-test");
         let _ = cancel(Some("native-smoke-test"));
         // Close only the console created by this test process.
-        if let Ok(mut slot) = SESSION.lock() {
+        if let Ok(mut slot) = lock(MAIN) {
             if let Some(mut session) = slot.take() {
                 unsafe { PostMessageW(session.hwnd as HWND, WM_CLOSE, 0, 0); }
                 let _ = session.child.wait();
@@ -653,7 +701,7 @@ mod tests {
     fn native_hook_smoke() {
         let expected = "dictation integration check";
         {
-            let mut slot = SESSION.lock().unwrap();
+            let mut slot = lock(MAIN).unwrap();
             let s = ensure(&mut slot, false).unwrap();
             s.owner = Some("hook-smoke".into());
             let _ = std::fs::remove_file(s.dir.join("transcript.txt"));
@@ -665,7 +713,7 @@ mod tests {
         }
         let result = stop("hook-smoke", Duration::ZERO);
         let _ = cancel(Some("hook-smoke"));
-        if let Ok(mut slot) = SESSION.lock() {
+        if let Ok(mut slot) = lock(MAIN) {
             if let Some(mut s) = slot.take() { unsafe { PostMessageW(s.hwnd as HWND, WM_CLOSE, 0, 0); } s.child.wait(); }
         }
         assert_eq!(result.unwrap(), expected);
