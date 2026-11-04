@@ -40,10 +40,80 @@ struct Session { child: ConsoleProcess, _job: ProcessJob, pid: u32, hwnd: isize,
     touched: Instant,
     // Live text polls this recording that did not find the prompt.
     live_misses: u32,
-    // Set by the hook server the moment the transcript file is written.
-    arrived: std::sync::Arc<(Mutex<bool>, std::sync::Condvar)>,
     // The Claude Code version this console runs, for errors.
     version: String }
+
+// Console change events. conhost raises EVENT_CONSOLE_* WinEvents for every
+// change of its window, hidden or not; a watcher thread counts them per
+// dictation console, and the waits below wake on them instead of polling.
+static CHANGES: Mutex<Vec<(isize, u64)>> = Mutex::new(Vec::new());
+static CHANGED: std::sync::Condvar = std::sync::Condvar::new();
+// A burst of events (the microphone level drawn in the prompt) costs one read.
+const READ_GAP: Duration = Duration::from_millis(20);
+// Guards against a missed event.
+const SAFETY_CHECK: Duration = Duration::from_millis(500);
+
+unsafe extern "system" fn console_event(_: windows_sys::Win32::UI::Accessibility::HWINEVENTHOOK, _: u32, hwnd: HWND, _: i32, _: i32, _: u32, _: u32) {
+    if let Ok(mut changes) = CHANGES.lock() {
+        if let Some(entry) = changes.iter_mut().find(|(window, _)| *window == hwnd as isize) {
+            entry.1 += 1;
+            CHANGED.notify_all();
+        }
+    }
+}
+
+// Starts counting changes of this console window (and the watcher on first use).
+fn watch_console(hwnd: isize) {
+    static WATCHER: std::sync::Once = std::sync::Once::new();
+    WATCHER.call_once(|| {
+        let started = std::thread::Builder::new().name("claude-console-events".into()).spawn(|| unsafe {
+            use windows_sys::Win32::UI::Accessibility::SetWinEventHook;
+            let hook = SetWinEventHook(EVENT_CONSOLE_CARET, EVENT_CONSOLE_END_APPLICATION, std::ptr::null_mut(),
+                Some(console_event), 0, 0, WINEVENT_OUTOFCONTEXT);
+            if hook.is_null() { log::warn!("Claude Code: {}", failure("не удалось подписаться на изменения консоли")); return; }
+            let mut message: MSG = std::mem::zeroed();
+            while GetMessageW(&mut message, std::ptr::null_mut(), 0, 0) > 0 { TranslateMessage(&message); DispatchMessageW(&message); }
+        });
+        if let Err(error) = started { log::warn!("Claude Code: console watcher not started: {error}"); }
+    });
+    if let Ok(mut changes) = CHANGES.lock() {
+        changes.retain(|(window, _)| unsafe { IsWindow(*window as HWND) != 0 });
+        if !changes.iter().any(|(window, _)| *window == hwnd) { changes.push((hwnd, 0)); }
+    }
+}
+
+// Wakes waiters for something other than a screen change (the hook's transcript).
+fn wake_console_waiters() {
+    let _changes = CHANGES.lock();
+    CHANGED.notify_all();
+}
+
+// Waits for the next change of one console window.
+struct ConsoleWait { hwnd: isize, seen: u64, last_read: Option<Instant> }
+impl ConsoleWait {
+    fn new(hwnd: isize) -> Self {
+        let seen = CHANGES.lock().ok().and_then(|changes| changes.iter().find(|(window, _)| *window == hwnd).map(|entry| entry.1)).unwrap_or(0);
+        Self { hwnd, seen, last_read: None }
+    }
+    // Returns once the console changed, `ready()` holds (checked under the same
+    // lock the hook's wake takes, so a wake is never missed) or `timeout` passed.
+    fn next(&mut self, timeout: Duration, ready: impl Fn() -> bool) {
+        let deadline = Instant::now() + timeout;
+        if let Ok(mut changes) = CHANGES.lock() {
+            loop {
+                let count = changes.iter().find(|(window, _)| *window == self.hwnd).map_or(self.seen, |entry| entry.1);
+                if count != self.seen { self.seen = count; break; }
+                // Not a screen read: no gap to keep.
+                if ready() { return; }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() { break; }
+                changes = match CHANGED.wait_timeout(changes, left) { Ok((changes, _)) => changes, Err(_) => return };
+            }
+        }
+        if let Some(last) = self.last_read { sleep(READ_GAP.saturating_sub(last.elapsed())); }
+        self.last_read = Some(Instant::now());
+    }
+}
 // Two hidden consoles: while one finishes the previous phrase (Claude finalizes
 // it on its server for about half a second after the stop), the next recording
 // starts at once in the other. One console cannot do both: a new recording
@@ -276,7 +346,7 @@ fn prompt_colours(session: &Session, screen: &[u16]) -> String {
 
 // Receives Claude's UserPromptSubmit hook, stores the prompt as transcript.txt
 // in the session folder and blocks the prompt so it never reaches the model.
-fn start_hook_server(dir: PathBuf, arrived: std::sync::Arc<(Mutex<bool>, std::sync::Condvar)>) -> Result<String, String> {
+fn start_hook_server(dir: PathBuf) -> Result<String, String> {
     use std::hash::{BuildHasher, Hasher};
     use std::io::{BufRead, BufReader, Read, Write};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -311,8 +381,7 @@ fn start_hook_server(dir: PathBuf, arrived: std::sync::Arc<(Mutex<bool>, std::sy
                 if let Some(text) = prompt.filter(|text| !text.is_empty()) {
                     let temporary = dir.join("transcript.tmp");
                     if std::fs::write(&temporary, text).is_ok() && std::fs::rename(&temporary, dir.join("transcript.txt")).is_ok() {
-                        if let Ok(mut flag) = arrived.0.lock() { *flag = true; }
-                        arrived.1.notify_all();
+                        wake_console_waiters();
                     }
                 }
                 let body = r#"{"decision":"block","reason":"[dictation] captured"}"#;
@@ -353,6 +422,7 @@ fn prompt_text(screen: &[u16]) -> Option<String> {
 // an empty prompt. Tap-to-record starts only on an empty prompt; otherwise
 // Space would type a space instead of starting the microphone.
 fn clear_prompt(session: &Session) -> Result<(), String> {
+    let mut changes = ConsoleWait::new(session.hwnd);
     for attempt in 0..40 {
         match screen(session).ok().as_deref().and_then(prompt_text) {
             Some(text) if text.is_empty() => {
@@ -365,7 +435,7 @@ fn clear_prompt(session: &Session) -> Result<(), String> {
         }
         key(session, 0x55, 0x15, LEFT_CTRL_PRESSED)?;
         key(session, 0x08, 0x08, 0)?;
-        sleep(Duration::from_millis(40));
+        changes.next(SAFETY_CHECK, || false);
     }
     let left = screen(session).ok().as_deref().and_then(prompt_text).unwrap_or_default();
     log::warn!("Claude Code prompt could not be cleared: {}", super::super::clipboard_history::preview(&left));
@@ -424,8 +494,7 @@ fn ensure(slot: &mut Option<Session>, visible: bool) -> Result<&mut Session, Str
         std::fs::write(dir.join("LICENSE"), include_str!("../claude-dictate-LICENSE")).map_err(|e| e.to_string())?;
         // An HTTP hook avoids starting Git Bash and PowerShell for every prompt
         // (about half a second before the transcript arrives).
-        let arrived = std::sync::Arc::new((Mutex::new(false), std::sync::Condvar::new()));
-        let hook = start_hook_server(dir.clone(), arrived.clone())?;
+        let hook = start_hook_server(dir.clone())?;
         // Only this session: no telemetry, error reports or auto-updates. Sign-in
         // and voice transcription are essential traffic and keep working.
         let settings = serde_json::json!({"language":"ru", "tui":"default", "voice":{"enabled":true,"mode":"tap"},
@@ -473,7 +542,9 @@ fn ensure(slot: &mut Option<Session>, visible: bool) -> Result<&mut Session, Str
             if !process.is_null() { CloseHandle(process); }
         }
         unsafe { ShowWindow(hwnd as HWND, if visible { SW_SHOW } else { SW_HIDE }); if !visible && !target.is_null() { SetForegroundWindow(target); } }
-        let mut session = Session { child, _job: job, pid, hwnd, dir, owner: None, mic_seen: false, touched: Instant::now(), live_misses: 0, arrived, version };
+        let mut session = Session { child, _job: job, pid, hwnd, dir, owner: None, mic_seen: false, touched: Instant::now(), live_misses: 0, version };
+        watch_console(hwnd);
+        let mut changes = ConsoleWait::new(hwnd);
         log::info!("Claude Code console started: version {}", session.version);
         // Ready means Claude has drawn its prompt. The visible console is where the
         // user signs in, so it has no prompt yet and is not waited for. The limit
@@ -495,7 +566,7 @@ fn ensure(slot: &mut Option<Session>, visible: bool) -> Result<&mut Session, Str
                 let _ = session.child.kill(); session.child.wait();
                 return Err(format!("Claude Code ({}) не показал строку ввода. Откройте его окно в настройках шага и завершите вход или первоначальную настройку. Экран: {tail}", session.version));
             }
-            sleep(Duration::from_millis(100));
+            changes.next(SAFETY_CHECK, || false);
         }
         *slot = Some(session);
     }
@@ -604,14 +675,36 @@ pub fn start(run_id: &str) -> Result<(), String> {
     Err(format!("Claude Code ({}) не включил микрофон. Откройте его окно в настройках шага и завершите вход или первоначальную настройку.", s.version))
 }
 
-pub fn finished(run_id: &str, live: bool) -> Result<Poll, String> {
-    let mut slot = lock(owned_by(run_id)?)?;
-    let s = slot.as_mut().ok_or("Сеанс Claude Code закрыт")?;
-    if s.owner.as_deref() != Some(run_id) { return Err("Диктовка отменена".into()); }
-    s.touched = Instant::now();
-    if unsafe { IsWindow(s.hwnd as HWND) } == 0 { return Err("Окно Claude Code закрыто".into()); }
-    let finished = s.dir.join("transcript.txt").is_file() || (s.mic_seen && !microphone_active(s.pid)?);
-    Ok(Poll { finished, text: if live { live_text(s) } else { None } })
+// Answers when the recording ended by itself (transcript or microphone off) or,
+// with `live`, when the interim text differs from `known`, the text the overlay
+// shows; otherwise after the safety check. The overlay asks again at once, so
+// the interim text reaches it as soon as Claude draws it.
+pub fn finished(run_id: &str, live: bool, known: Option<&str>) -> Result<Poll, String> {
+    let index = owned_by(run_id)?;
+    let (hwnd, transcript) = lock(index)?.as_ref().map(|s| (s.hwnd, s.dir.join("transcript.txt"))).ok_or("Сеанс Claude Code закрыт")?;
+    let mut changes = ConsoleWait::new(hwnd);
+    let deadline = Instant::now() + SAFETY_CHECK;
+    let mut next_microphone = Instant::now();
+    loop {
+        {
+            let mut slot = lock(index)?;
+            let s = slot.as_mut().ok_or("Сеанс Claude Code закрыт")?;
+            if s.owner.as_deref() != Some(run_id) { return Err("Диктовка отменена".into()); }
+            s.touched = Instant::now();
+            if unsafe { IsWindow(s.hwnd as HWND) } == 0 { return Err("Окно Claude Code закрыто".into()); }
+            if transcript.is_file() { return Ok(Poll { finished: true, text: None }); }
+            // The audio-session check is slower than a screen read and Claude only
+            // switches the microphone off itself after long silence.
+            if Instant::now() >= next_microphone {
+                next_microphone = Instant::now() + Duration::from_millis(250);
+                if s.mic_seen && !microphone_active(s.pid)? { return Ok(Poll { finished: true, text: None }); }
+            }
+            let text = if live { live_text(s) } else { None };
+            if text.is_some() && text.as_deref() != known || Instant::now() >= deadline { return Ok(Poll { finished: false, text }); }
+        }
+        let wake = deadline.min(next_microphone).saturating_duration_since(Instant::now());
+        changes.next(wake, || transcript.is_file());
+    }
 }
 
 // `tail` is what is left of the step's after-stop time: Claude keeps listening
@@ -621,12 +714,13 @@ pub fn stop(run_id: &str, tail: Duration, first_word: Duration) -> Result<String
     let deadline = Instant::now() + tail;
     let first_word_deadline = Instant::now() + first_word;
     let index = owned_by(run_id)?;
-    let pid = {
+    let (pid, hwnd) = {
         let slot = lock(index)?;
         let s = slot.as_ref().ok_or("Сеанс Claude Code закрыт")?;
         if s.owner.as_deref() != Some(run_id) { return Err("Диктовка отменена".into()); }
-        s.pid
+        (s.pid, s.hwnd)
     };
+    let mut changes = ConsoleWait::new(hwnd);
     // Checked as late as possible: Claude may switch the microphone off itself, and
     // Space then would start a new recording. The check takes a few ms.
     sleep(deadline.saturating_duration_since(Instant::now()).saturating_sub(Duration::from_millis(25)));
@@ -657,7 +751,7 @@ pub fn stop(run_id: &str, tail: Duration, first_word: Duration) -> Result<String
             }
             waited = true;
             drop(slot);
-            sleep(Duration::from_millis(40));
+            changes.next(SAFETY_CHECK.min(first_word_deadline.saturating_duration_since(Instant::now())), || false);
         }
         // Claude may have switched the microphone off itself meanwhile, and Space
         // then would start a new recording.
@@ -671,7 +765,7 @@ pub fn stop(run_id: &str, tail: Duration, first_word: Duration) -> Result<String
         if !ready && mic { key(s, 0x20, 0x20, 0)?; }
         log::info!("Claude Code stop: microphone active={mic}, transcript already present={ready}");
     }
-    let arrived = lock(index)?.as_ref().map(|s| s.arrived.clone()).ok_or("Сеанс Claude Code закрыт")?;
+    let transcript = lock(index)?.as_ref().map(|s| s.dir.join("transcript.txt")).ok_or("Сеанс Claude Code закрыт")?;
     let started = Instant::now();
     // After the mic stops Claude finalizes the transcript on its server and, in
     // tap mode, submits it by itself when it has 3+ words (autoSubmit applies to
@@ -698,19 +792,26 @@ pub fn stop(run_id: &str, tail: Duration, first_word: Duration) -> Result<String
                     if submitted_screen.is_some() || fallback_sent { "our Enter" } else { "submitted by Claude" },
                     super::super::clipboard_history::preview(&text));
                 // The blocking hook restores the submitted prompt after exiting.
-                // Clear it in the background instead of delaying the transcript.
+                // Clear it in the background, once it is back, instead of delaying
+                // the transcript. A new recording clears it itself.
+                let hwnd = s.hwnd;
                 std::thread::spawn(move || {
-                    sleep(Duration::from_millis(700));
-                    if let Ok(slot) = lock(index) {
-                        if let Some(s) = slot.as_ref().filter(|s| s.owner.is_none()) { let _ = clear_prompt(s); }
+                    let mut changes = ConsoleWait::new(hwnd);
+                    let deadline = Instant::now() + Duration::from_millis(1500);
+                    loop {
+                        let Ok(slot) = lock(index) else { return };
+                        let Some(s) = slot.as_ref().filter(|s| s.owner.is_none()) else { return };
+                        let restored = screen(s).ok().as_deref().and_then(prompt_text).is_some_and(|text| !text.is_empty());
+                        if restored || Instant::now() >= deadline { let _ = clear_prompt(s); return; }
+                        drop(slot);
+                        changes.next(SAFETY_CHECK.min(deadline.saturating_duration_since(Instant::now())), || false);
                     }
                 });
                 if text.trim().is_empty() { return Err("Речь не распознана.".into()); }
                 return Ok(text.trim().to_owned());
             }
-            // Diagnostics: every screen change after the stop (read on each wake,
-            // ~50 ms), with the prompt text colours, to find what Claude shows
-            // while it finalizes the phrase.
+            // Diagnostics: every screen change after the stop, with the prompt
+            // text colours, to see what Claude shows while it finalizes the phrase.
             let seen = screen(s).ok();
             if let Some(current) = seen.as_ref().filter(|current| logged_screen.as_ref() != Some(*current)) {
                 log::info!("Claude Code screen +{} ms: {} colours {}", started.elapsed().as_millis(), screen_rows(current), prompt_colours(s, current));
@@ -747,11 +848,9 @@ pub fn stop(run_id: &str, tail: Duration, first_word: Duration) -> Result<String
                 log::warn!("Claude Code returned no transcript in 15 s; screen ends with {}", logged_screen.as_deref().map(screen_tail).unwrap_or_default());
                 let _ = key(s, 0x1b, 0x1b, 0); s.owner = None; return Err(format!("Claude Code ({}) не вернул текст. Проверьте окно диктовки.", s.version)); }
         }
-        // The 50 ms only bounds how soon the checks above run again; the
-        // transcript itself wakes this wait through the hook server.
-        if let Ok(mut flag) = arrived.0.lock() {
-            if *flag { *flag = false; } else { let _ = arrived.1.wait_timeout(flag, Duration::from_millis(50)); }
-        }
+        // Screen changes and the hook's transcript wake this wait; the safety
+        // check also covers the 6 s and 15 s limits.
+        changes.next(SAFETY_CHECK, || transcript.is_file());
     }
 }
 

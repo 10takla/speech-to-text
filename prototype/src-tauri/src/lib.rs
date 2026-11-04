@@ -64,6 +64,9 @@ pub fn run() {
     // Network crates trace every WebSocket frame: that floods the log and the overlay console.
     let log_plugin = tauri_plugin_log::Builder::default()
         .targets(targets)
+        // The default 40 KB with one file lost a few minutes of dictation diagnostics.
+        .max_file_size(10_000_000)
+        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
         // Milliseconds: a whole paste or recording start fits into one second.
         .format(|out, message, record| {
             let now = tauri_plugin_log::TimezoneStrategy::UseLocal.get_now();

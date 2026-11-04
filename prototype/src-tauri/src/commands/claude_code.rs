@@ -31,20 +31,20 @@ pub async fn stop_claude_dictation(run_id: String, after_stop_ms: Option<u64>, f
     #[cfg(windows)]
     return tauri::async_runtime::spawn_blocking(move || platform::stop(&run_id,
         std::time::Duration::from_millis(after_stop_ms.unwrap_or(0)),
-        std::time::Duration::from_millis(first_word_wait_ms.unwrap_or(800))))
+        std::time::Duration::from_millis(first_word_wait_ms.unwrap_or(1500))))
         .await.map_err(|e| e.to_string())?;
     #[cfg(not(windows))]
     { let _ = (run_id, after_stop_ms, first_word_wait_ms); Err("Диктовка Claude Code доступна в Windows.".into()) }
 }
 
 #[tauri::command]
-pub async fn poll_claude_dictation(run_id: String, live: Option<bool>) -> Result<ClaudePoll, String> {
+pub async fn poll_claude_dictation(run_id: String, live: Option<bool>, known: Option<String>) -> Result<ClaudePoll, String> {
     #[cfg(windows)]
-    return tauri::async_runtime::spawn_blocking(move || platform::finished(&run_id, live.unwrap_or(false)))
+    return tauri::async_runtime::spawn_blocking(move || platform::finished(&run_id, live.unwrap_or(false), known.as_deref()))
         .await.map_err(|e| e.to_string())?
         .map(|poll| ClaudePoll { finished: poll.finished, text: poll.text });
     #[cfg(not(windows))]
-    { let _ = (run_id, live); Ok(ClaudePoll { finished: false, text: None }) }
+    { let _ = (run_id, live, known); Ok(ClaudePoll { finished: false, text: None }) }
 }
 
 // `text` is Claude's interim transcript shown in its prompt, when requested

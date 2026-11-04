@@ -71,13 +71,15 @@ it('records through Claude with the overlay visible and passes native text to th
   expect(item.capture.inputLevel).toHaveBeenCalled();
   // Claude's interim text from its prompt is shown while recording.
   await vi.advanceTimersByTimeAsync(250);
-  expect(item.invoke).toHaveBeenCalledWith('poll_claude_dictation', { runId: 'claude', live: true });
+  expect(item.invoke).toHaveBeenCalledWith('poll_claude_dictation', { runId: 'claude', live: true, known: '' });
+  // The next poll tells the native side what the overlay already shows.
+  expect(item.invoke).toHaveBeenCalledWith('poll_claude_dictation', { runId: 'claude', live: true, known: 'Проверка' });
   expect(previews).toContain('Проверка');
   const stopped = item.session.stop();
   // Claude keeps recording for the step's after-stop tail (150 ms by default);
   // the native side waits it out, so the stop is sent right away.
   await vi.advanceTimersByTimeAsync(0);
-  expect(item.invoke).toHaveBeenCalledWith('stop_claude_dictation', { runId: 'claude', afterStopMs: 150, firstWordWaitMs: 800 });
+  expect(item.invoke).toHaveBeenCalledWith('stop_claude_dictation', { runId: 'claude', afterStopMs: 150, firstWordWaitMs: 1500 });
   expect(workflows[0].dependencies.initialText).toBe('Проверка диктовки');
   // The parallel capture ends on the same stop boundary and goes to history.
   expect(item.capture.stop).toHaveBeenCalledWith(expect.any(Number), 150, expect.any(AbortSignal));
@@ -122,7 +124,7 @@ it('reactively hides and restores Claude live text without changing the run snap
   expect(item.view.querySelector('[data-role=live-preview]')!.classList.contains('hidden')).toBe(true);
   await vi.advanceTimersByTimeAsync(500);
   expect(previews.at(-1)).toBe('');
-  expect(item.invoke).toHaveBeenLastCalledWith('poll_claude_dictation', { runId: 'claude-reactive', live: false });
+  expect(item.invoke).toHaveBeenLastCalledWith('poll_claude_dictation', { runId: 'claude-reactive', live: false, known: null });
   setClaudeLive(item, true);
   expect(previews.at(-1)).toBe('Первый текст');
   text = 'Новый текст';

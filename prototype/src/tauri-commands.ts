@@ -7,7 +7,7 @@ type CommandContract = {
   start_claude_dictation: { args: { runId: string }; result: void };
   stop_claude_dictation: { args: { runId: string; afterStopMs?: number; firstWordWaitMs?: number }; result: string };
   prepare_claude_code: { args: { enabled: boolean }; result: void };
-  poll_claude_dictation: { args: { runId: string; live: boolean }; result: { finished: boolean; text: string | null } };
+  poll_claude_dictation: { args: { runId: string; live: boolean; known: string | null }; result: { finished: boolean; text: string | null } };
   claude_code_running: { args: undefined; result: boolean };
   get_selected_text: { args: { runId: string }; result: string };
   set_startup_settings: { args: { settings: { startupMode: '' | 'window' | 'hidden-taskbar' | 'tray' } }; result: void };

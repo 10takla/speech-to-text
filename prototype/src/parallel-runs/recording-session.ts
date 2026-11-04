@@ -30,6 +30,9 @@ import { applyOverlayTextFlags, type OverlayStepStatus } from '../OverlaySteps';
 import { walkScenarioSteps } from '../scenario-tree';
 import { textOutputQueue, speechPlaybackQueue } from './runtime';
 
+// Claude Code: the smallest gap between two polls of its console.
+const CLAUDE_POLL_GAP_MS = 20;
+
 interface SessionHost {
   runId: string;
   settings: OverlayConfig;
@@ -159,15 +162,14 @@ export function createRecordingSession(host: SessionHost) {
   // The scenario starts from the text selected in another application, without recording.
   const usesSelection = () => config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0]?.type === 'selectedText';
   let claudeRecording = false;
-  let claudePoll: ReturnType<typeof setInterval> | undefined;
-  let claudePolling = false;
+  let claudePoll: ReturnType<typeof setTimeout> | undefined;
   // Claude Code records the voice itself. A parallel capture of the default
   // microphone drives the level indicator and keeps the audio for history.
   let claudeMeter = false;
   // Returns whether the parallel capture was running; `keepCapture` leaves it
   // for the caller to stop and collect.
   function stopClaudePolling(keepCapture = false) {
-    clearInterval(claudePoll); claudePoll = undefined;
+    clearTimeout(claudePoll); claudePoll = undefined;
     if (!claudeMeter) return false;
     claudeMeter = false;
     stopVolumeAnalysis();
@@ -685,23 +687,28 @@ export function createRecordingSession(host: SessionHost) {
         void capture.then(started => {
           if (started && claudeMeter && claudeRecording && generation === recordingGeneration) startNativeVolumeAnalysis();
         });
-        claudePoll = setInterval(() => {
-          if (claudePolling || !claudeRecording || state !== 'recording' || !invoke) return;
-          claudePolling = true;
+        // The native side answers when the console shows new interim text or
+        // the recording ends, so the next question goes out right away; the
+        // short gap only keeps an instant answer from spinning.
+        const pollClaude = () => {
+          claudePoll = undefined;
+          if (!claudeRecording || state !== 'recording' || !invoke || generation !== recordingGeneration) return;
           const live = claudeLivePreviewEnabled();
-          void invokeCommand(invoke, 'poll_claude_dictation', { runId: host.runId, live }).then(({ finished, text }) => {
+          void invokeCommand(invoke, 'poll_claude_dictation', { runId: host.runId, live, known: live ? lastPreviewText : null }).then(({ finished, text }) => {
             if (generation !== recordingGeneration || state !== 'recording') return;
             // Claude's interim transcript; the final text still arrives through its hook.
-            if (live && text !== null && text !== lastPreviewText) setLivePreviewText(text);
-            if (finished) void finishRecording();
+            if (claudeLivePreviewEnabled() && text !== null && text !== lastPreviewText) setLivePreviewText(text);
+            if (finished) { void finishRecording(); return; }
+            if (claudeRecording) claudePoll = setTimeout(pollClaude, CLAUDE_POLL_GAP_MS);
           }).catch(error => {
             if (generation !== recordingGeneration) return;
             stopClaudePolling();
             claudeRecording = false;
             void invokeCommand(invoke!, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
             void recordClaudeFailure(generation, error);
-          }).finally(() => { claudePolling = false; });
-        }, 250);
+          });
+        };
+        pollClaude();
         return;
       }
       await emitSound('start_record');

@@ -7,7 +7,7 @@ export function normalizeAfterStopMs(value: unknown): number {
 
 // Claude Code: how long the stop waits for the first recognised word before
 // giving up. Console Claude discards a recording that has no word yet.
-export const DEFAULT_FIRST_WORD_WAIT_MS = 800;
+export const DEFAULT_FIRST_WORD_WAIT_MS = 1500;
 
 export function normalizeFirstWordWaitMs(value: unknown): number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
