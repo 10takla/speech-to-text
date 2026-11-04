@@ -63,3 +63,45 @@ it('keeps independent resources independent and continues after an output failur
   expect(playback).not.toHaveBeenCalled();
   speech.setPaused(false); await playing;
 });
+
+it('lets the next run paste before an earlier run copies, keeping copies in order', async () => {
+  const queue = createResourceQueue();
+  queue.register('first', ['paste-1', 'copy-1'], ['paste-1']);
+  queue.register('second', ['paste-2', 'copy-2'], ['paste-2']);
+  const calls: string[] = [];
+  await queue.execute('first', 'paste-1', async () => { calls.push('paste-1'); });
+  // The second run is still recording: the first run's copy waits for its paste.
+  const copy1 = queue.execute('first', 'copy-1', async () => { calls.push('copy-1'); });
+  await tick();
+  expect(calls).toEqual(['paste-1']);
+  const copy2 = queue.execute('second', 'copy-2', async () => { calls.push('copy-2'); });
+  await queue.execute('second', 'paste-2', async () => { calls.push('paste-2'); });
+  await Promise.all([copy1, copy2]);
+  expect(calls).toEqual(['paste-1', 'paste-2', 'copy-1', 'copy-2']);
+});
+
+it('does not hold a copy for a run whose copy comes before its paste', async () => {
+  const queue = createResourceQueue();
+  queue.register('first', ['copy-1'], []);
+  queue.register('second', ['copy-2', 'paste-2'], ['paste-2']);
+  queue.register('third', ['paste-3'], ['paste-3']);
+  const calls: string[] = [];
+  await queue.execute('first', 'copy-1', async () => { calls.push('copy-1'); });
+  await queue.execute('second', 'copy-2', async () => { calls.push('copy-2'); });
+  await queue.execute('second', 'paste-2', async () => { calls.push('paste-2'); });
+  await queue.execute('third', 'paste-3', async () => { calls.push('paste-3'); });
+  expect(calls).toEqual(['copy-1', 'copy-2', 'paste-2', 'paste-3']);
+});
+
+it('releases a held copy when the later run is cancelled', async () => {
+  const queue = createResourceQueue();
+  queue.register('first', ['copy-1'], []);
+  queue.register('second', ['paste-2'], ['paste-2']);
+  const copy = vi.fn(async () => {});
+  const held = queue.execute('first', 'copy-1', copy);
+  await tick();
+  expect(copy).not.toHaveBeenCalled();
+  queue.finish('second');
+  await held;
+  expect(copy).toHaveBeenCalledOnce();
+});

@@ -340,6 +340,14 @@ fn screen_tail(screen: &[u16]) -> String {
     format!("«{}»", flat.chars().skip(count.saturating_sub(160)).collect::<String>())
 }
 
+// The last non-empty rows of the screen, one line, rows split by « ⏎ ».
+fn screen_rows(screen: &[u16]) -> String {
+    let text = String::from_utf16_lossy(screen);
+    let rows: Vec<String> = text.lines().map(|row| row.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|row| !row.is_empty()).collect();
+    format!("«{}»", rows[rows.len().saturating_sub(12)..].join(" ⏎ "))
+}
+
 fn ensure(slot: &mut Option<Session>, visible: bool) -> Result<&mut Session, String> {
     let alive = slot.as_mut().is_some_and(|s| s.child.try_wait().ok().flatten().is_none() && unsafe { IsWindow(s.hwnd as HWND) != 0 });
     if !alive {
@@ -574,6 +582,7 @@ pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
     // text and lose the last words. Only a short transcript, which Claude does not
     // submit, needs our Enter, and only after the screen has stayed still longer.
     let mut last_screen: Option<Vec<u16>> = None;
+    let mut logged_screen: Option<Vec<u16>> = None;
     let mut stable_since = Instant::now();
     let mut submitted_screen: Option<Vec<u16>> = None;
     let mut fallback_sent = false;
@@ -607,12 +616,22 @@ pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
             }
             let check = Instant::now() >= next_check;
             if check { next_check = Instant::now() + Duration::from_millis(200); }
+            // Diagnostics: every screen change after the stop, to find what Claude
+            // shows while it finalizes the phrase.
+            let seen = if check { screen(s).ok() } else { None };
+            if let Some(current) = seen.as_ref().filter(|current| logged_screen.as_ref() != Some(*current)) {
+                log::info!("Claude Code screen +{} ms: {}", started.elapsed().as_millis(), screen_rows(current));
+                logged_screen = Some(current.clone());
+            }
             if check && !microphone_active(s.pid).unwrap_or(false) {
-                if let Ok(current) = screen(s) {
+                if let Some(current) = seen {
                     if last_screen.as_ref() != Some(&current) { last_screen = Some(current); stable_since = Instant::now(); }
                     // Nothing was said (or a quick on/off): the prompt stays empty, no
                     // hook ever fires, and waiting for the 15 s timeout looks like a hang.
-                    else if stable_since.elapsed() >= Duration::from_millis(1500) && prompt_text(&current).as_deref() == Some("") {
+                    // A short phrase can also show nothing until Claude's server returns
+                    // it, which took up to ~1.7 s, so an empty prompt is not trusted sooner.
+                    else if stable_since.elapsed() >= Duration::from_millis(1500) && started.elapsed() >= Duration::from_millis(4000)
+                        && prompt_text(&current).as_deref() == Some("") {
                         log::info!("Claude Code: prompt still empty {} ms after stop, no speech; screen ends with {}",
                             started.elapsed().as_millis(), screen_tail(&current));
                         s.owner = None;

@@ -1,5 +1,7 @@
 type Slot = {
   id: string;
+  // Goes ahead of other actions of earlier runs, see `drain`.
+  priority?: boolean;
   ready?: () => Promise<void>;
   reject?: (error: unknown) => void;
   running?: boolean;
@@ -11,11 +13,30 @@ export function createResourceQueue() {
   let busy = false;
   let paused = false;
   const cancelled = () => new DOMException('Запуск отменён', 'AbortError');
+  // Runs keep their order, except that a ready action without priority (a copy)
+  // waits while the next run is about to do a priority action (a paste): the text
+  // appears in the field without waiting for the previous copy's clipboard
+  // history updates. Only a run whose next action is the paste is waited for,
+  // so a paste that itself waits for the run's copy cannot deadlock the queue.
   const drain = () => {
     if (busy || paused) return;
-    const slots = [...runs.values()].find(items => items.length > 0);
-    const slot = slots?.find(item => item.ready);
-    if (!slot) return;
+    const queued = [...runs.values()].filter(items => items.length > 0);
+    let slots: Slot[] | undefined, slot: Slot | undefined;
+    let yielding = false;
+    for (const [index, items] of queued.entries()) {
+      if (yielding) {
+        // Only a paste may pass the waiting copy, and pastes keep their order.
+        if (items[0].priority && items[0].ready) { slots = items; slot = items[0]; }
+        break;
+      }
+      const ready = items.find(item => item.ready);
+      if (!ready) break;
+      // A run with its own paste still to do does not yield: pastes keep their order.
+      if (!ready.priority && !items.some(item => item.priority) && queued[index + 1]?.[0].priority) { yielding = true; continue; }
+      slots = items; slot = ready;
+      break;
+    }
+    if (!slot || !slots) return;
     busy = true;
     slot.running = true;
     void slot.ready!().finally(() => {
@@ -25,8 +46,8 @@ export function createResourceQueue() {
     });
   };
   return {
-    register(runId: string, stepIds: string[]) {
-      runs.set(runId, stepIds.map(id => ({ id })));
+    register(runId: string, stepIds: string[], priorityIds: readonly string[] = []) {
+      runs.set(runId, stepIds.map(id => ({ id, priority: priorityIds.includes(id) })));
     },
     execute<T>(runId: string, stepId: string, operation: () => Promise<T>, onWaiting?: (waiting: boolean) => void): Promise<T> {
       const slot = runs.get(runId)?.find(item => item.id === stepId);

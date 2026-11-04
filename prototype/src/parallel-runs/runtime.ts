@@ -22,7 +22,8 @@ export function observeRecordingResource(listener: (value: boolean) => void) {
 
 export function registerRunResources(runId: string, steps: ScenarioStep[]) {
   const enabled = [...walkScenarioSteps(steps)].filter(step => step.enabled);
-  textOutputQueue.register(runId, enabled.filter(step => step.type === 'copy' || step.type === 'paste').map(step => step.id));
+  const output = enabled.filter(step => step.type === 'copy' || step.type === 'paste');
+  textOutputQueue.register(runId, output.map(step => step.id), output.filter(step => step.type === 'paste').map(step => step.id));
   // A speech with its own player plays on the user's choice, not in turn.
   speechPlaybackQueue.register(runId, enabled.filter(step => step.type === 'speak' && !speechHasOwnPlayer(step)).map(step => step.id));
 }
