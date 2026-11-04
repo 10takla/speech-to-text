@@ -14,14 +14,6 @@ export function normalizeFirstWordWaitMs(value: unknown): number {
     ? value : DEFAULT_FIRST_WORD_WAIT_MS;
 }
 
-// Claude Code: how long the prompt stays empty after the stop before
-// «Речь не распознана».
-export const DEFAULT_EMPTY_PROMPT_WAIT_MS = 1000;
-
-export function normalizeEmptyPromptWaitMs(value: unknown): number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
-    ? value : DEFAULT_EMPTY_PROMPT_WAIT_MS;
-}
 
 // Browser/Android capture remains active for the requested extra recording time.
 // Desktop capture applies the boundary directly on the audio stream's clock.

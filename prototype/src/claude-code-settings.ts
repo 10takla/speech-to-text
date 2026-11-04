@@ -3,7 +3,7 @@ import { invokeCommand } from './tauri-commands';
 import { isAndroid } from './android-runtime';
 import { errorMessage } from './error-message';
 import type { ScenarioStep } from './scenario';
-import { normalizeAfterStopMs, normalizeEmptyPromptWaitMs, normalizeFirstWordWaitMs } from './recording-stop';
+import { normalizeAfterStopMs, normalizeFirstWordWaitMs } from './recording-stop';
 
 export function mountClaudeCodeSettings(root: HTMLElement, step: ScenarioStep, save: () => void) {
   const afterStopLabel = document.createElement('label');
@@ -48,27 +48,6 @@ export function mountClaudeCodeSettings(root: HTMLElement, step: ScenarioStep, s
   });
   firstWordLabel.append(firstWordInput, document.createTextNode(' мс'));
   root.append(firstWordLabel);
-  const emptyLabel = document.createElement('label');
-  emptyLabel.className = 'scenario-step-setting-label scenario-step-setting-label-inline';
-  emptyLabel.textContent = 'Ожидание пустой строки:';
-  const emptyInput = document.createElement('input');
-  emptyInput.type = 'number';
-  emptyInput.min = '0';
-  emptyInput.step = '1';
-  emptyInput.value = String(normalizeEmptyPromptWaitMs(step.emptyPromptWaitMs));
-  emptyInput.setAttribute('aria-label', 'Ожидание пустой строки, мс');
-  emptyInput.title = 'Сколько строка ввода Claude Code остаётся пустой после стопа, прежде чем «Речь не распознана».';
-  emptyInput.addEventListener('change', () => {
-    const value = emptyInput.valueAsNumber;
-    if (!Number.isSafeInteger(value) || value < 0) {
-      emptyInput.value = String(normalizeEmptyPromptWaitMs(step.emptyPromptWaitMs));
-      return;
-    }
-    step.emptyPromptWaitMs = value;
-    save();
-  });
-  emptyLabel.append(emptyInput, document.createTextNode(' мс'));
-  root.append(emptyLabel);
   const liveLabel = document.createElement('label');
   liveLabel.className = 'checkbox-label';
   const liveToggle = document.createElement('input');
