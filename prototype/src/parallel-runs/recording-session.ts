@@ -897,11 +897,11 @@ export function createRecordingSession(host: SessionHost) {
         : Promise.resolve(new Blob());
       try {
         // Claude Code keeps recording for the tail so the last words are not cut off.
-        await waitForStopTail(stopRequestedAtMs, afterStopMs, controller.signal);
-        if (generation !== recordingGeneration || controller.signal.aborted) throw new DOMException('Запись отменена', 'AbortError');
+        // The native side waits it out, doing its checks meanwhile.
+        const tail = Math.max(0, stopRequestedAtMs + afterStopMs - Date.now());
         // A failed stop (nothing recognised, no text in time) still goes through the
         // workflow, so the run and its error are recorded in history.
-        const spoken = await invokeCommand(invoke, 'stop_claude_dictation', { runId: host.runId })
+        const spoken = await invokeCommand(invoke, 'stop_claude_dictation', { runId: host.runId, afterStopMs: tail })
           .then(text => ({ text, error: undefined }), error => ({ text: '', error: errorMessage(error) }));
         if (spoken.error !== undefined) await invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
         const audioBlob = await audio;

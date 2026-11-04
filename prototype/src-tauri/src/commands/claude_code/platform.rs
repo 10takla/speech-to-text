@@ -496,15 +496,29 @@ pub fn finished(run_id: &str, live: bool) -> Result<Poll, String> {
     Ok(Poll { finished, text: if live { live_text(s) } else { None } })
 }
 
-pub fn stop(run_id: &str) -> Result<String, String> {
+// `tail` is what is left of the step's after-stop time: Claude keeps listening
+// that long after the stop press. The checks run inside it, so Space goes out
+// right at its end instead of after them.
+pub fn stop(run_id: &str, tail: Duration) -> Result<String, String> {
+    let deadline = Instant::now() + tail;
+    let pid = {
+        let slot = SESSION.lock().map_err(|e| e.to_string())?;
+        let s = slot.as_ref().ok_or("Сеанс Claude Code закрыт")?;
+        if s.owner.as_deref() != Some(run_id) { return Err("Диктовка отменена".into()); }
+        s.pid
+    };
+    // Checked as late as possible: Claude may switch the microphone off itself, and
+    // Space then would start a new recording. The check takes a few ms.
+    sleep(deadline.saturating_duration_since(Instant::now()).saturating_sub(Duration::from_millis(25)));
+    let mic = microphone_active(pid)?;
+    sleep(deadline.saturating_duration_since(Instant::now()));
     {
         let slot = SESSION.lock().map_err(|e| e.to_string())?;
         let s = slot.as_ref().ok_or("Сеанс Claude Code закрыт")?;
         if s.owner.as_deref() != Some(run_id) { return Err("Диктовка отменена".into()); }
-        let mic = microphone_active(s.pid)?;
         let ready = s.dir.join("transcript.txt").exists();
-        log::info!("Claude Code stop: microphone active={mic}, transcript already present={ready}");
         if !ready && mic { key(s, 0x20, 0x20, 0)?; }
+        log::info!("Claude Code stop: microphone active={mic}, transcript already present={ready}");
     }
     let arrived = SESSION.lock().map_err(|e| e.to_string())?.as_ref().map(|s| s.arrived.clone()).ok_or("Сеанс Claude Code закрыт")?;
     let started = Instant::now();
@@ -517,6 +531,9 @@ pub fn stop(run_id: &str) -> Result<String, String> {
     let mut stable_since = Instant::now();
     let mut submitted_screen: Option<Vec<u16>> = None;
     let mut fallback_sent = false;
+    // Microphone and screen checks are slow (COM, console attach) and hold the
+    // session; the transcript itself is checked on every wake.
+    let mut next_check = Instant::now();
     loop {
         {
             let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
@@ -542,7 +559,9 @@ pub fn stop(run_id: &str) -> Result<String, String> {
                 if text.trim().is_empty() { return Err("Речь не распознана.".into()); }
                 return Ok(text.trim().to_owned());
             }
-            if !microphone_active(s.pid).unwrap_or(false) {
+            let check = Instant::now() >= next_check;
+            if check { next_check = Instant::now() + Duration::from_millis(200); }
+            if check && !microphone_active(s.pid).unwrap_or(false) {
                 if let Ok(current) = screen(s) {
                     if last_screen.as_ref() != Some(&current) { last_screen = Some(current); stable_since = Instant::now(); }
                     // Nothing was said (or a quick on/off): the prompt stays empty, no
@@ -569,7 +588,7 @@ pub fn stop(run_id: &str) -> Result<String, String> {
                 log::warn!("Claude Code returned no transcript in 15 s; screen ends with {}", last_screen.as_deref().map(screen_tail).unwrap_or_default());
                 let _ = key(s, 0x1b, 0x1b, 0); s.owner = None; return Err("Claude Code не вернул текст. Проверьте окно диктовки.".into()); }
         }
-        // The 50 ms only bounds how soon the screen checks above run again; the
+        // The 50 ms only bounds how soon the checks above run again; the
         // transcript itself wakes this wait through the hook server.
         if let Ok(mut flag) = arrived.0.lock() {
             if *flag { *flag = false; } else { let _ = arrived.1.wait_timeout(flag, Duration::from_millis(50)); }
@@ -644,7 +663,7 @@ mod tests {
             sleep(Duration::from_millis(300));
             key(s, 0x0d, 0x0d, 0).unwrap();
         }
-        let result = stop("hook-smoke");
+        let result = stop("hook-smoke", Duration::ZERO);
         let _ = cancel(Some("hook-smoke"));
         if let Ok(mut slot) = SESSION.lock() {
             if let Some(mut s) = slot.take() { unsafe { PostMessageW(s.hwnd as HWND, WM_CLOSE, 0, 0); } s.child.wait(); }

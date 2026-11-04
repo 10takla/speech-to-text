@@ -74,11 +74,10 @@ it('records through Claude with the overlay visible and passes native text to th
   expect(item.invoke).toHaveBeenCalledWith('poll_claude_dictation', { runId: 'claude', live: true });
   expect(previews).toContain('Проверка');
   const stopped = item.session.stop();
-  // Claude keeps recording for the step's after-stop tail (150 ms by default).
-  await vi.advanceTimersByTimeAsync(100);
-  expect(item.invoke).not.toHaveBeenCalledWith('stop_claude_dictation', { runId: 'claude' });
-  await vi.advanceTimersByTimeAsync(60);
-  expect(item.invoke).toHaveBeenCalledWith('stop_claude_dictation', { runId: 'claude' });
+  // Claude keeps recording for the step's after-stop tail (150 ms by default);
+  // the native side waits it out, so the stop is sent right away.
+  await vi.advanceTimersByTimeAsync(0);
+  expect(item.invoke).toHaveBeenCalledWith('stop_claude_dictation', { runId: 'claude', afterStopMs: 150 });
   expect(workflows[0].dependencies.initialText).toBe('Проверка диктовки');
   // The parallel capture ends on the same stop boundary and goes to history.
   expect(item.capture.stop).toHaveBeenCalledWith(expect.any(Number), 150, expect.any(AbortSignal));

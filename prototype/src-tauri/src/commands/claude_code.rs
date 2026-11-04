@@ -27,11 +27,12 @@ pub async fn start_claude_dictation(run_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn stop_claude_dictation(run_id: String) -> Result<String, String> {
+pub async fn stop_claude_dictation(run_id: String, after_stop_ms: Option<u64>) -> Result<String, String> {
     #[cfg(windows)]
-    return tauri::async_runtime::spawn_blocking(move || platform::stop(&run_id)).await.map_err(|e| e.to_string())?;
+    return tauri::async_runtime::spawn_blocking(move || platform::stop(&run_id, std::time::Duration::from_millis(after_stop_ms.unwrap_or(0))))
+        .await.map_err(|e| e.to_string())?;
     #[cfg(not(windows))]
-    { let _ = run_id; Err("Диктовка Claude Code доступна в Windows.".into()) }
+    { let _ = (run_id, after_stop_ms); Err("Диктовка Claude Code доступна в Windows.".into()) }
 }
 
 #[tauri::command]

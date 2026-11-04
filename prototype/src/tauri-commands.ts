@@ -5,7 +5,7 @@ type CommandContract = {
   open_claude_code: { args: undefined; result: void };
   cancel_claude_code: { args: { runId: string } | undefined; result: void };
   start_claude_dictation: { args: { runId: string }; result: void };
-  stop_claude_dictation: { args: { runId: string }; result: string };
+  stop_claude_dictation: { args: { runId: string; afterStopMs?: number }; result: string };
   prepare_claude_code: { args: { enabled: boolean }; result: void };
   poll_claude_dictation: { args: { runId: string; live: boolean }; result: { finished: boolean; text: string | null } };
   claude_code_running: { args: undefined; result: boolean };

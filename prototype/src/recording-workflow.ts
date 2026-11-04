@@ -158,23 +158,25 @@ export async function runRecordingWorkflow(
     ...((step.type === 'claudeCode' || step.type === 'selectedText') && dependencies.initialText !== undefined ? { text: dependencies.initialText } : {}),
   }));
   const transcriptionIndex = scenario.steps.findIndex(step => step.type === 'transcribe' || step.type === 'claudeCode' || step.type === 'selectedText');
-  let historyEntryId: string | null = null;
   const historyStartedAt = performance.now();
   dependencies.onStage('Сохранение записи...');
-  try {
-    const entry = await dependencies.history.add(
-      // Claude Code delivers text, with the app's parallel recording when there is one.
-      { ...(audioBlob.size ? { audioBlob } : {}), ...(dependencies.initialText !== undefined ? { text: dependencies.initialText } : {}),
-        status: 'recorded', scenarioName: scenario.name, steps: historySteps },
-      dependencies.getSettings().historyMaxItems || 10,
-    );
-    historyEntryId = entry.id;
-  } catch (error) {
+  // Not awaited: inserting the text must not wait for IndexedDB. Later writes
+  // queue behind the entry, and completion waits for all of them.
+  const historyEntryId = dependencies.history.add(
+    // Claude Code delivers text, with the app's parallel recording when there is one.
+    { ...(audioBlob.size ? { audioBlob } : {}), ...(dependencies.initialText !== undefined ? { text: dependencies.initialText } : {}),
+      status: 'recorded', scenarioName: scenario.name, steps: historySteps },
+    dependencies.getSettings().historyMaxItems || 10,
+  ).then(entry => entry.id, error => {
     console.warn('Не удалось сохранить аудиозапись в IndexedDB:', error);
-  } finally {
+    return null;
+  }).finally(() => {
     console.info('[recording-timing] history-add', { bytes: audioBlob.size, elapsedMs: Math.round(performance.now() - historyStartedAt) });
+  });
+  if (signal?.aborted) {
+    await historyEntryId;
+    return { status: 'cancelled' };
   }
-  if (signal?.aborted) return { status: 'cancelled' };
 
   const historyWrites = createWorkflowHistory(dependencies.history, historyEntryId);
   // Enqueue each result immediately; only completion waits for storage.
@@ -236,7 +238,7 @@ export async function runRecordingWorkflow(
           dependencies.getFragmentOffset(), dependencies.liveTranscript, dependencies.cut));
       }
 
-      if (historyEntryId) save({
+      save({
         originalAudioBlob: audioBlob,
         fragments: dependencies.snapshotFragments(),
       });
@@ -253,7 +255,7 @@ export async function runRecordingWorkflow(
             console.info(`Распознавание: аудио ${(fragment.end - fragment.start).toFixed(1)} с, ожидание ${Math.round(performance.now() - startedAt)} мс`);
           }
           if (signal?.aborted) return { status: 'cancelled' };
-          if (historyEntryId) save({ fragments: dependencies.snapshotFragments() });
+          save({ fragments: dependencies.snapshotFragments() });
         }
       }
 
@@ -263,7 +265,7 @@ export async function runRecordingWorkflow(
       const editedAudio = allRemoved.length
         ? dependencies.cut(buffer, retainedRanges(allRemoved, buffer.duration))
         : audioBlob;
-      if (historyEntryId) save({
+      save({
         originalAudioBlob: audioBlob,
         audioBlob: editedAudio,
         text: transcribedText,
@@ -282,7 +284,7 @@ export async function runRecordingWorkflow(
       const message = errorMessage(error);
       if (transcriptionIndex >= 0) historySteps[transcriptionIndex] = { ...historySteps[transcriptionIndex], status: 'error', errorMessage: message };
       if (transcriptionIndex >= 0) dependencies.onStepStatus?.({ ...scenario.steps[transcriptionIndex], status: 'error' });
-      if (historyEntryId) save({
+      save({
         status: 'error', errorStep: 'Транскрибация текста', errorMessage: message,
         steps: historySteps.slice(),
       });
@@ -293,7 +295,7 @@ export async function runRecordingWorkflow(
     // A selection is not a recognition result: it is shown only by the steps that ask for it.
     if (scenario.steps[transcriptionIndex]?.type !== 'selectedText') dependencies.onText(transcribedText);
     if (!transcribedText && allRemoved.length) {
-      if (historyEntryId) save({ status: 'success' });
+      save({ status: 'success' });
       return { status: 'success', text: '' };
     }
 
@@ -381,7 +383,7 @@ export async function runRecordingWorkflow(
           const keepAudio = (audio: Blob, speechMarks: readonly SpeechMark[] = []) => {
             historySteps[stepIndex] = { ...historySteps[stepIndex], audioBlob: audio, text: finalText,
               ...(speechMarks.length ? { speechMarks: [...speechMarks] } : {}) };
-            if (historyEntryId) save({ steps: historySteps.slice() });
+            save({ steps: historySteps.slice() });
           };
           if (speak) currentAudio = await runAction(step, () => speak(finalText, signal, audio => keepAudio(audio, getSpeechMarks(dependencies.speechScope))));
           else currentAudio = await speech.synthesize(finalText, signal, step.speechSettings);
@@ -415,7 +417,7 @@ export async function runRecordingWorkflow(
         historySteps[stepIndex] = { ...historySteps[stepIndex], status: 'error', errorMessage: message };
         dependencies.onStepStatus?.({ ...scenario.steps[stepIndex], status: 'error' });
         if (displayedActions.includes(stepIndex)) updateDisplayedActions();
-        if (historyEntryId) save({
+        save({
           status: 'error', errorStep: stage, errorMessage: message,
           steps: historySteps.slice(),
         });
@@ -430,13 +432,13 @@ export async function runRecordingWorkflow(
     if (signal?.aborted) return { status: 'cancelled' };
     if (actionErrors.length) {
       const message = `Сценарий завершён с ошибками: ${actionErrors.join('; ')}`;
-      if (historyEntryId) save({
+      save({
         status: 'error', errorMessage: actionErrors.join('; '),
         steps: historySteps.slice(),
       });
       return { status: 'error', message };
     }
-    if (historyEntryId) save({ status: 'success' });
+    save({ status: 'success' });
     return { status: 'success', text: finalText };
   } finally {
     dependencies.skipActions?.(scenario.steps.map(step => step.id));
