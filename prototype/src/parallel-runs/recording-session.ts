@@ -996,10 +996,13 @@ export function createRecordingSession(host: SessionHost) {
     stopClaudePolling();
     if (usesClaude() && invoke) {
       claudeRecording = false;
-      // Invalidate callbacks before waiting for a native startup or stop to finish.
+      // Invalidate callbacks of a native startup or stop still in progress.
       recordingGeneration++;
       workflowAbortController?.abort();
-      await invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
+      // Not awaited: a hung Claude Code must not keep the overlay open. The
+      // native side stops a startup in progress by itself; a startup that
+      // finishes anyway sees the new generation and cancels again.
+      void invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
     }
     recordingGeneration++;
     startingRecording = false;

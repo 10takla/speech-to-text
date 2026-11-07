@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Mutex, thread::sleep, time::{Duration, Instant}};
+use std::{path::PathBuf, sync::{atomic::{AtomicU64, Ordering}, Mutex}, thread::sleep, time::{Duration, Instant}};
 use windows_sys::Win32::{Foundation::*, System::{Console::*, Diagnostics::ToolHelp::*}, Storage::FileSystem::*, UI::WindowsAndMessaging::*};
 
 struct ConsoleProcess { handle: isize, pid: u32 }
@@ -132,6 +132,18 @@ fn owned_by(run_id: &str) -> Result<usize, String> {
     }
     Err("Диктовка отменена".into())
 }
+// Cancellation requested while start() holds the console lock. cancel() takes
+// that lock too, so a startup that waits on Claude would otherwise delay the
+// cancel until it finished by itself.
+static CANCELLED_RUNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+// Raised by a cancel without a run id: every startup in progress stops.
+static CANCEL_ALL: AtomicU64 = AtomicU64::new(0);
+const CANCELLED: &str = "Диктовка отменена";
+
+fn forget_cancel(run_id: &str) {
+    if let Ok(mut runs) = CANCELLED_RUNS.lock() { runs.retain(|id| id != run_id); }
+}
+
 // AttachConsole is process-wide. Never use it concurrently with another transport.
 static CONSOLE: Mutex<()> = Mutex::new(());
 fn wide(value: &str) -> Vec<u16> { value.encode_utf16().chain(Some(0)).collect() }
@@ -421,9 +433,16 @@ fn prompt_text(screen: &[u16]) -> Option<String> {
 // restored prompt spans several, so erase and join lines until the screen shows
 // an empty prompt. Tap-to-record starts only on an empty prompt; otherwise
 // Space would type a space instead of starting the microphone.
-fn clear_prompt(session: &Session) -> Result<(), String> {
+fn clear_prompt(session: &Session) -> Result<(), String> { clear_prompt_unless(session, &|| false) }
+
+// Stops between passes once `cancelled` holds: up to 40 passes may take 20 s.
+fn clear_prompt_unless(session: &Session, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
     let mut changes = ConsoleWait::new(session.hwnd);
     for attempt in 0..40 {
+        if attempt > 0 && cancelled() {
+            log::info!("Claude Code start cancelled while clearing the prompt");
+            return Err(CANCELLED.into());
+        }
         match screen(session).ok().as_deref().and_then(prompt_text) {
             Some(text) if text.is_empty() => {
                 if attempt > 0 { log::info!("Claude Code prompt cleared after {attempt} passes"); }
@@ -577,14 +596,31 @@ fn ensure(slot: &mut Option<Session>, visible: bool) -> Result<&mut Session, Str
 
 // `claude auth status` reports the sign-in without starting a session (~0.4 s).
 fn check_auth(exe: &std::path::Path) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    let output = std::process::Command::new(exe).args(["auth", "status"])
+    use std::{io::Read, os::windows::process::CommandExt, process::Stdio};
+    // Normally ~0.4 s; without a limit a hung check held the console lock forever.
+    const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+    let begun = Instant::now();
+    let mut child = std::process::Command::new(exe).args(["auth", "status"])
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
-        .output().map_err(|e| format!("Не удалось проверить вход в Claude Code: {e}"))?;
-    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_default();
+        .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
+        .spawn().map_err(|e| format!("Не удалось проверить вход в Claude Code: {e}"))?;
+    // The answer is a short JSON line, far below the pipe buffer, so waiting
+    // before reading cannot block the child on a full pipe.
+    let exit = loop {
+        if let Some(exit) = child.try_wait().map_err(|e| format!("Не удалось проверить вход в Claude Code: {e}"))? { break exit; }
+        if begun.elapsed() > AUTH_TIMEOUT {
+            let _ = child.kill(); let _ = child.wait();
+            log::warn!("Claude Code auth: `claude auth status` did not answer within {} s", AUTH_TIMEOUT.as_secs());
+            return Err(format!("Claude Code не ответил на проверку входа за {} с. Попробуйте ещё раз или откройте его окно в настройках шага.", AUTH_TIMEOUT.as_secs()));
+        }
+        sleep(Duration::from_millis(50));
+    };
+    let mut stdout = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() { let _ = pipe.read_to_end(&mut stdout); }
+    let status: serde_json::Value = serde_json::from_slice(&stdout).unwrap_or_default();
     let method = status.get("authMethod").and_then(|value| value.as_str()).unwrap_or("none");
-    let logged_in = output.status.success() && status.get("loggedIn").and_then(|value| value.as_bool()) == Some(true);
-    log::info!("Claude Code auth: logged in={logged_in}, method={method}");
+    let logged_in = exit.success() && status.get("loggedIn").and_then(|value| value.as_bool()) == Some(true);
+    log::info!("Claude Code auth: logged in={logged_in}, method={method}, checked in {} ms", begun.elapsed().as_millis());
     if !logged_in {
         return Err("Войдите в Claude Code: нажмите «Открыть Claude Code» в настройках шага и выполните /login.".into());
     }
@@ -640,6 +676,18 @@ fn busy(s: &Session, run_id: &str) -> bool {
 }
 
 pub fn start(run_id: &str) -> Result<(), String> {
+    // A flag left by a cancel of this run that came before this start.
+    forget_cancel(run_id);
+    let epoch = CANCEL_ALL.load(Ordering::SeqCst);
+    let cancelled = || CANCEL_ALL.load(Ordering::SeqCst) != epoch
+        || CANCELLED_RUNS.lock().map(|runs| runs.iter().any(|id| id == run_id)).unwrap_or(false);
+    let result = start_dictation(run_id, &cancelled);
+    forget_cancel(run_id);
+    result
+}
+
+fn start_dictation(run_id: &str, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
+    let requested = Instant::now();
     // A free running console first, then one still to start; the main one first.
     let mut chosen = None;
     'search: for pass in 0..2 {
@@ -649,27 +697,48 @@ pub fn start(run_id: &str) -> Result<(), String> {
         }
     }
     let Some((index, mut slot)) = chosen else { return Err("Claude Code уже занят диктовкой.".into()) };
+    let waited = requested.elapsed();
+    let launched = slot.is_none();
+    log::info!("Claude Code start: console {index} taken after {} ms, launching={launched}", waited.as_millis());
+    // A console that is starting is not interrupted: it is ready for the next recording.
     let s = ensure(&mut slot, false)?;
+    if launched { log::info!("Claude Code start: console {index} ready after {} ms", (requested.elapsed() - waited).as_millis()); }
     if let Some(owner) = s.owner.clone() {
         log::warn!("Claude Code: releasing stale dictation of run {owner} on console {index} (idle {} ms)", s.touched.elapsed().as_millis());
         let _ = key(s, 0x1b, 0x1b, 0);
         s.owner = None;
     }
+    if cancelled() {
+        log::info!("Claude Code start cancelled before the prompt was cleared");
+        return Err(CANCELLED.into());
+    }
     let begun = Instant::now();
     let stale = std::fs::remove_file(s.dir.join("transcript.txt")).is_ok();
     log::info!("Claude Code start on console {index}: stale transcript removed={stale}");
-    clear_prompt(s)?;
+    clear_prompt_unless(s, cancelled)?;
     let cleared = begun.elapsed();
+    if cancelled() {
+        log::info!("Claude Code start cancelled after the prompt was cleared");
+        return Err(CANCELLED.into());
+    }
     key(s, 0x20, 0x20, 0)?;
+    log::info!("Claude Code start: Space sent, waiting for the microphone");
     s.owner = Some(run_id.to_owned()); s.mic_seen = false; s.touched = Instant::now(); s.live_misses = 0;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
+        if cancelled() {
+            log::info!("Claude Code start cancelled while waiting for the microphone");
+            let _ = key(s, 0x1b, 0x1b, 0); s.owner = None;
+            return Err(CANCELLED.into());
+        }
         if microphone_active(s.pid).unwrap_or(false) {
             s.mic_seen = true;
-            log::info!("Claude Code recording started: prompt cleared in {} ms, microphone opened {} ms after Space", cleared.as_millis(), (begun.elapsed() - cleared).as_millis());            return Ok(());
+            log::info!("Claude Code recording started: prompt cleared in {} ms, microphone opened {} ms after Space", cleared.as_millis(), (begun.elapsed() - cleared).as_millis());
+            return Ok(());
         }
         sleep(Duration::from_millis(40));
     }
+    log::warn!("Claude Code start: microphone did not open within 5 s");
     let _ = key(s, 0x1b, 0x1b, 0); s.owner = None;
     unsafe { ShowWindow(s.hwnd as HWND, SW_RESTORE); }
     Err(format!("Claude Code ({}) не включил микрофон. Откройте его окно в настройках шага и завершите вход или первоначальную настройку.", s.version))
@@ -856,15 +925,27 @@ pub fn stop(run_id: &str, tail: Duration, first_word: Duration) -> Result<String
 
 // Without a run id: every console that has a dictation.
 pub fn cancel(run_id: Option<&str>) -> Result<(), String> {
-    let mut result = Ok(());
-    for index in 0..CONSOLES {
-        let mut slot = lock(index)?;
-        let Some(s) = slot.as_mut() else { continue };
-        if run_id.map_or(s.owner.is_none(), |run_id| s.owner.as_deref() != Some(run_id)) { continue; }
-        if let Err(error) = key(s, 0x1b, 0x1b, 0) { result = Err(error); }
-        s.owner = None;
-        let _ = std::fs::remove_file(s.dir.join("transcript.txt"));
+    // First the flag, without waiting: a startup in progress sees it at its next check.
+    match run_id {
+        Some(run_id) => if let Ok(mut runs) = CANCELLED_RUNS.lock() { runs.push(run_id.to_owned()); },
+        None => { CANCEL_ALL.fetch_add(1, Ordering::SeqCst); }
     }
+    // Waits for the console lock: a startup holding it has seen the flag by
+    // then, or has finished and its dictation is stopped here.
+    let result = (|| {
+        let mut result = Ok(());
+        for index in 0..CONSOLES {
+            let mut slot = lock(index)?;
+            let Some(s) = slot.as_mut() else { continue };
+            if run_id.map_or(s.owner.is_none(), |run_id| s.owner.as_deref() != Some(run_id)) { continue; }
+            log::info!("Claude Code: dictation cancelled on console {index}");
+            if let Err(error) = key(s, 0x1b, 0x1b, 0) { result = Err(error); }
+            s.owner = None;
+            let _ = std::fs::remove_file(s.dir.join("transcript.txt"));
+        }
+        result
+    })();
+    if let Some(run_id) = run_id { forget_cancel(run_id); }
     result
 }
 

@@ -19,15 +19,24 @@
       }
     },
     {
-      "label": "watch:desktop",
+      "label": "watch:windows",
       "type": "shell",
       "command": "pnpm",
       "args": [
-        "watch:desktop"
+        "watch:windows"
       ],
       "options": {
         "cwd": "${workspaceFolder}/prototype"
       },
+      "problemMatcher": [],
+      "isBackground": true,
+      "group": "build"
+    },
+    {
+      "label": "watch:android",
+      "type": "npm",
+      "script": "watch:android",
+      "path": "prototype",
       "problemMatcher": [],
       "isBackground": true,
       "group": "build"
@@ -42,6 +51,22 @@
       "options": {
         "cwd": "${workspaceFolder}/prototype"
       },
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "build:release:windows",
+      "type": "npm",
+      "script": "build:release:windows",
+      "path": "prototype",
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "build:release:android",
+      "type": "npm",
+      "script": "build:release:android",
+      "path": "prototype",
       "problemMatcher": [],
       "group": "build"
     }
