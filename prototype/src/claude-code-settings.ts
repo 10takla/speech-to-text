@@ -60,7 +60,7 @@ export function mountClaudeCodeSettings(root: HTMLElement, step: ScenarioStep, s
   const open = document.createElement('button');
   open.type = 'button';
   open.className = 'btn secondary';
-  open.textContent = 'Открыть Claude Code';
+  open.textContent = 'Открыть Claude Code CLI';
   open.disabled = !isTauri() || isAndroid || !/Windows/i.test(navigator.userAgent);
   if (open.disabled) open.title = 'Доступно в приложении для Windows';
   const status = document.createElement('span');

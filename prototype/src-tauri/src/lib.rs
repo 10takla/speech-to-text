@@ -81,7 +81,16 @@ pub fn run() {
         .level_for("rustls", log::LevelFilter::Info)
         .build();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // Must be the first plugin. A second launch shows the running app's window and exits.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        log::info!("Повторный запуск: показываю окно работающего приложения");
+        if let Some(main_win) = app.get_webview_window("main") {
+            crate::commands::show_control_panel(&main_win);
+        }
+    }));
+    builder
         .plugin(log_plugin)
         .plugin(tauri_plugin_clipboard_manager::init())
         .manage(RecordHotkeyState::default())
@@ -202,10 +211,9 @@ pub fn run() {
             drop(control_keys);
             // Создание системного трея (Tray Icon)
             let show_panel = MenuItem::with_id(app, "show_panel", "Панель управления", true, None::<&str>)?;
-            let show_rec = MenuItem::with_id(app, "show_overlay", "Оверлей записи", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
 
-            let menu = Menu::with_items(app, &[&show_panel, &show_rec, &quit])?;
+            let menu = Menu::with_items(app, &[&show_panel, &quit])?;
 
             let _tray = TrayIconBuilder::new()
                 .icon(tauri::include_image!("./icons/32x32.png"))
@@ -216,9 +224,6 @@ pub fn run() {
                         if let Some(main_win) = app.get_webview_window("main") {
                             crate::commands::show_control_panel(&main_win);
                         }
-                    }
-                    "show_overlay" => {
-                        let _ = show_overlay(app.clone());
                     }
                     "quit" => {
                         app.exit(0);

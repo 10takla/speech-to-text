@@ -134,7 +134,7 @@ export const DEFAULT_SCENARIO_STEP_SETTINGS: ScenarioStepSettingsDefaults = {
 };
 
 export const SCENARIO_STEP_CONTRACTS: readonly ScenarioStepContract[] = [
-  { type: 'claudeCode', category: 'source', title: 'Claude Code', input: 'trigger', outputs: ['text'] },
+  { type: 'claudeCode', category: 'source', title: 'Claude Code CLI', input: 'trigger', outputs: ['text'] },
   { type: 'selectedText', category: 'source', title: 'Выделенный текст', input: 'trigger', outputs: ['text'] },
   { type: 'startRecording', category: 'source', title: 'Запись', input: 'trigger', outputs: ['audio'] },
   { type: 'transcribe', category: 'transformation', title: 'Транскрибация', input: 'audio', outputs: ['text'] },
