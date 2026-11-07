@@ -152,7 +152,7 @@ pub fn run() {
             system_speech_capabilities,
             set_speech_media_state,
             edge_speech_voices, edge_speech_stream, edge_speech_prepare, cancel_edge_speech,
-            crate::startup::set_startup_settings,
+            crate::startup::get_start_in, crate::startup::set_start_in,
             position_overlay_on_cursor_monitor,
             show_overlay,
             hide_overlay,

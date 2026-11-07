@@ -10,7 +10,8 @@ type CommandContract = {
   poll_claude_dictation: { args: { runId: string; live: boolean; known: string | null }; result: { finished: boolean; text: string | null } };
   claude_code_running: { args: undefined; result: boolean };
   get_selected_text: { args: { runId: string }; result: string };
-  set_startup_settings: { args: { settings: { startupMode: '' | 'window' | 'hidden-taskbar' | 'tray' } }; result: void };
+  get_start_in: { args: undefined; result: '' | 'window' | 'taskbar' | 'tray' };
+  set_start_in: { args: { mode: '' | 'window' | 'taskbar' | 'tray' }; result: void };
   position_overlay_on_cursor_monitor: { args: { reset?: boolean } | undefined; result: boolean };
   show_overlay: { args: undefined; result: void };
   hide_overlay: { args: undefined; result: boolean };

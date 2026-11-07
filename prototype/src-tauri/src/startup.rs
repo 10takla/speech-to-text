@@ -1,52 +1,64 @@
 use tauri::{AppHandle, Manager};
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct StartupSettings {
-    startup_mode: String,
-}
+// The start mode lives only in the Windows Run entry, as `--start-in=<mode>`.
+// A launch without the argument (or with an unknown value) opens the window.
+const ARGUMENT: &str = "--start-in=";
+const MODES: [&str; 3] = ["window", "taskbar", "tray"];
+#[cfg(windows)]
+const RUN_KEY: &str = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+#[cfg(windows)]
+const RUN_VALUE: &str = "SpeechToText";
 
-impl Default for StartupSettings {
-    fn default() -> Self {
-        Self { startup_mode: String::new() }
-    }
-}
-
-fn settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("startup.json"))
+fn mode_in(command: &str) -> Option<&'static str> {
+    command.split_whitespace()
+        .filter_map(|part| part.trim_matches('"').strip_prefix(ARGUMENT))
+        .find_map(|value| MODES.into_iter().find(|mode| *mode == value))
 }
 
 pub fn restore(app: &AppHandle) -> Result<(), String> {
-    let launched_by_autostart = std::env::args_os()
-        .any(|arg| arg == std::ffi::OsStr::new("--startup"));
-    log::info!("Запуск приложения: autostart={launched_by_autostart}");
-    if !launched_by_autostart {
-        if let Some(window) = app.get_webview_window("main") {
-            window.set_skip_taskbar(false).map_err(|e| e.to_string())?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mode = mode_in(&args.join(" ")).unwrap_or("window");
+    log::info!("Запуск приложения: --start-in={mode}");
+    let Some(window) = app.get_webview_window("main") else { return Ok(()) };
+    window.set_skip_taskbar(mode == "tray").map_err(|e| e.to_string())?;
+    match mode {
+        "taskbar" => {
             window.show().map_err(|e| e.to_string())?;
+            window.minimize().map_err(|e| e.to_string())?;
         }
-        return Ok(());
-    }
-
-    let path = settings_path(app)?;
-    let settings = if path.exists() {
-        serde_json::from_slice::<StartupSettings>(&std::fs::read(path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?
-    } else { StartupSettings::default() };
-    log::info!("Режим автозапуска: {}", settings.startup_mode);
-    if let Some(window) = app.get_webview_window("main") {
-        window.set_skip_taskbar(settings.startup_mode == "tray").map_err(|e| e.to_string())?;
-        match settings.startup_mode.as_str() {
-            "" | "window" => window.show().map_err(|e| e.to_string())?,
-            "hidden-taskbar" => {
-                window.show().map_err(|e| e.to_string())?;
-                window.minimize().map_err(|e| e.to_string())?;
-            }
-            "tray" => window.hide().map_err(|e| e.to_string())?,
-            _ => window.show().map_err(|e| e.to_string())?,
-        }
+        "tray" => window.hide().map_err(|e| e.to_string())?,
+        _ => window.show().map_err(|e| e.to_string())?,
     }
     Ok(())
+}
+
+#[cfg(windows)]
+fn reg() -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut command = std::process::Command::new("reg.exe");
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    command
+}
+
+// The command Windows runs at sign-in, or None without an entry.
+#[cfg(windows)]
+fn run_entry() -> Result<Option<String>, String> {
+    let output = reg().args(["query", RUN_KEY, "/v", RUN_VALUE]).output().map_err(|e| e.to_string())?;
+    if !output.status.success() { return Ok(None); }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text.lines()
+        .find_map(|line| line.trim_start().strip_prefix(RUN_VALUE))
+        .and_then(|rest| rest.trim_start().strip_prefix("REG_SZ"))
+        .map(|command| command.trim().to_string()))
+}
+
+// "" when the app does not start with Windows.
+#[tauri::command]
+pub fn get_start_in() -> Result<String, String> {
+    #[cfg(windows)]
+    return Ok(run_entry()?.as_deref().and_then(mode_in).unwrap_or("").to_string());
+    #[cfg(not(windows))]
+    Ok(String::new())
 }
 
 fn executable_for_startup() -> Result<std::path::PathBuf, String> {
@@ -62,33 +74,23 @@ fn executable_for_startup() -> Result<std::path::PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn set_startup_settings(app: AppHandle, settings: StartupSettings) -> Result<(), String> {
-    if !["", "window", "hidden-taskbar", "tray"].contains(&settings.startup_mode.as_str()) {
+pub fn set_start_in(mode: String) -> Result<(), String> {
+    if !mode.is_empty() && !MODES.contains(&mode.as_str()) {
         return Err("Некорректный режим запуска".into());
     }
-    let path = settings_path(&app)?;
-    std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        let mut command = std::process::Command::new("reg.exe");
-        command.creation_flags(0x08000000);
-        let key = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-        if settings.startup_mode.is_empty() {
-            let query = std::process::Command::new("reg.exe").creation_flags(0x08000000)
-                .args(["query", key, "/v", "SpeechToText"]).output().map_err(|e| e.to_string())?;
-            if query.status.success() {
-                command.args(["delete", key, "/v", "SpeechToText", "/f"]);
-            } else {
-                return persist(&path, &settings);
-            }
+        let mut command = reg();
+        if mode.is_empty() {
+            if run_entry()?.is_none() { return Ok(()); }
+            command.args(["delete", RUN_KEY, "/v", RUN_VALUE, "/f"]);
         } else {
             let executable = executable_for_startup()?;
             // canonicalize may produce a Windows extended path; Run expects a normal path.
             let executable = executable.to_string_lossy();
             let executable = executable.strip_prefix(r"\\?\").unwrap_or(&executable);
-            command.args(["add", key, "/v", "SpeechToText", "/t", "REG_SZ", "/d"])
-                .arg(format!("\"{executable}\" --startup")).arg("/f");
+            command.args(["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d"])
+                .arg(format!("\"{executable}\" {ARGUMENT}{mode}")).arg("/f");
         }
         let output = command.output().map_err(|e| e.to_string())?;
         if !output.status.success() {
@@ -100,13 +102,22 @@ pub fn set_startup_settings(app: AppHandle, settings: StartupSettings) -> Result
                 reason.to_string()
             });
         }
+        return Ok(());
     }
     #[cfg(not(windows))]
-    return Err("Автозапуск поддерживается только в Windows".into());
-    persist(&path, &settings)
+    Err("Автозапуск поддерживается только в Windows".into())
 }
 
-fn persist(path: &std::path::Path, settings: &StartupSettings) -> Result<(), String> {
-    std::fs::write(path, serde_json::to_vec(settings).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::mode_in;
+
+    #[test]
+    fn reads_the_mode_from_the_run_command() {
+        assert_eq!(mode_in(r#""C:\a b\app.exe" --start-in=tray"#), Some("tray"));
+        assert_eq!(mode_in("--start-in=taskbar"), Some("taskbar"));
+        assert_eq!(mode_in(r#""C:\app.exe""#), None);
+        assert_eq!(mode_in("--start-in=abc"), None);
+        assert_eq!(mode_in(r#""C:\app.exe" --startup"#), None);
+    }
 }

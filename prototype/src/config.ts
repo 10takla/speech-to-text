@@ -36,7 +36,6 @@ export interface OverlayPosition {
 }
 
 export interface AppSettings {
-  startupMode: '' | 'window' | 'hidden-taskbar' | 'tray';
   // Горячие клавиши
   hotkeyRecord: string;
   hotkeyCancel: string;
@@ -142,8 +141,6 @@ export function normalizeSettings(value: unknown): AppSettings {
     : null;
 
   const normalized: Omit<AppSettings, 'scenarios' | 'activeScenarioId' | 'androidScenarioId' | 'scenarioVersion'> = {
-    startupMode: enumValue('startupMode', ['', 'window', 'hidden-taskbar', 'tray'],
-      source.hideTaskbar === true ? 'tray' : defaults.startupMode),
     hotkeyRecord: oldRecordHotkey,
     hotkeyCancel: oldCancelHotkey,
     hotkeyPause: oldPauseHotkey,
@@ -404,7 +401,6 @@ export function defaultSettings(): AppSettings {
   const scenario = createDefaultScenario(false, 'paste', 'Control+Shift+KeyD', 'chime', DEFAULT_SCENARIO_STEP_SETTINGS, DEFAULT_SCENARIO_SOUND_SETTINGS, 'Control+Alt+KeyD');
   return {
     hotkeyRecord: 'Control+Shift+KeyD',
-    startupMode: '',
     hotkeyCancel: 'Escape',
     hotkeyPause: 'Control+Alt+KeyD',
     hotkeyResume: 'Control+Alt+KeyD',

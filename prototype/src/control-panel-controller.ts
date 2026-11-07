@@ -96,36 +96,40 @@ function showStartupError(error: unknown) {
   saveStatus.textContent = `Не удалось изменить автозапуск: ${errorMessage(error)}`;
   saveStatus.style.color = '#f87171';
 }
-function renderStartupSettings() {
-  startupMode.value = settings.startupMode;
-}
-async function syncStartupSettings() {
+type StartIn = '' | 'window' | 'taskbar' | 'tray';
+// The Windows Run entry is the only place the mode is kept: the panel shows what it holds.
+let startIn: StartIn = '';
+async function loadStartIn() {
   if (!isTauri() || isAndroid) return;
   const { invoke } = await import('@tauri-apps/api/core');
-  await invokeCommand(invoke, 'set_startup_settings', { settings: { startupMode: settings.startupMode } });
+  startIn = await invokeCommand(invoke, 'get_start_in', undefined);
+  startupMode.value = startIn;
 }
-renderStartupSettings();
+startupMode.value = startIn;
 if (isAndroid) document.getElementById('startup-settings')!.hidden = true;
 if (!isTauri()) {
   startupMode.disabled = true;
   startupMode.title = 'Автозапуск доступен в приложении для Windows.';
+} else void loadStartIn().catch(showStartupError);
+const isStartIn = (value: unknown): value is StartIn => ['', 'window', 'taskbar', 'tray'].includes(value as string);
+// Rewrites the Run entry; the panel and the JSON export follow what it holds.
+async function applyStartIn(mode: StartIn) {
+  if (!isTauri() || isAndroid || mode === startIn) return;
+  startupMode.disabled = true;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invokeCommand(invoke, 'set_start_in', { mode });
+    startIn = mode;
+  } catch (error) {
+    showStartupError(error);
+  } finally {
+    startupMode.value = startIn;
+    startupMode.disabled = false;
+  }
 }
-startupMode.addEventListener('change', async () => {
-    const previous = settings.startupMode;
-    startupMode.disabled = true;
-    settings.startupMode = ['', 'window', 'hidden-taskbar', 'tray'].includes(startupMode.value)
-      ? startupMode.value as typeof settings.startupMode : '';
-    try {
-      await syncStartupSettings();
-      saveSettingsPreservingOverlayPosition(settings);
-    } catch (error) {
-      settings.startupMode = previous;
-      renderStartupSettings();
-      showStartupError(error);
-    } finally {
-      startupMode.disabled = !isTauri();
-    }
-  });
+startupMode.addEventListener('change', () => {
+  void applyStartIn(isStartIn(startupMode.value) ? startupMode.value : '');
+});
 
 const overlayWidthField = overlayMaxWidthPercent.closest('.overlay-width-row, .form-field') as HTMLElement | null;
 
@@ -959,7 +963,8 @@ btnSettingsJson?.addEventListener('click', () => {
     closeSettingsJson();
     return;
   }
-  inputSettingsJson.value = JSON.stringify({ ...settings, position: loadSettings().position }, null, 2);
+  // startupMode is only carried in the JSON: the Run entry keeps it.
+  inputSettingsJson.value = JSON.stringify({ ...settings, position: loadSettings().position, startupMode: startIn }, null, 2);
   settingsJsonPanel.hidden = false;
   settingsJsonStatus.textContent = '';
   inputSettingsJson.removeAttribute('aria-invalid');
@@ -1001,8 +1006,6 @@ btnCopySettingsJson?.addEventListener('click', async () => {
 
 function applyConfiguration(next: typeof settings) {
     Object.assign(settings, next);
-    renderStartupSettings();
-    void syncStartupSettings().catch(showStartupError);
     renderedModelParameters = '';
     saveSettings(settings);
     lastRegisteredRecordHotkey = null;
@@ -1042,10 +1045,11 @@ function applyConfiguration(next: typeof settings) {
 document.getElementById('btn-reset-settings')!.addEventListener('click', async () => {
   if (!await confirmAction({
     title: 'Сбросить настройки?',
-    message: 'Общие настройки вернутся к значениям по умолчанию. Сценарии, история записей и аудиофайлы не изменятся.',
+    message: 'Общие настройки вернутся к значениям по умолчанию, автозапуск при входе в Windows будет выключен. Сценарии, история записей и аудиофайлы не изменятся.',
     confirmLabel: 'Сбросить настройки',
   })) return;
   applyConfiguration(resetGeneralSettings(settings));
+  void applyStartIn('');
   closeSettingsJson();
   saveStatus.textContent = 'Настройки сброшены';
   saveStatus.style.color = '#34d399';
@@ -1054,7 +1058,13 @@ document.getElementById('btn-reset-settings')!.addEventListener('click', async (
 btnApplySettingsJson?.addEventListener('click', () => {
   try {
     const imported = parseSettingsJson(inputSettingsJson.value);
+    const raw = JSON.parse(inputSettingsJson.value) as { startupMode?: unknown };
+    if (raw.startupMode !== undefined && !isStartIn(raw.startupMode)) {
+      throw new TypeError('startupMode: ожидается "", "window", "taskbar" или "tray".');
+    }
     applyConfiguration(imported);
+    // Without the field the current start mode stays as it is.
+    if (raw.startupMode !== undefined) void applyStartIn(raw.startupMode);
 
     saveStatus.textContent = '✓ Конфигурация применена';
     saveStatus.style.color = '#34d399';

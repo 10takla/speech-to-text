@@ -45,7 +45,7 @@ export default function ControlPanelApp() {
         <section className="cp-card cp-compact-settings" id="startup-settings">
           <div className="cp-settings-content">
           <h2>Запуск приложения</h2>
-          <div className="form-field"><label htmlFor="startup-mode">При входе в Windows:</label><select id="startup-mode"><option value="">Не запускать</option><option value="window">Открывать окно</option><option value="hidden-taskbar">Свёрнутым в панели задач</option><option value="tray">Скрытым в трее</option></select></div>
+          <div className="form-field"><label htmlFor="startup-mode">При входе в Windows:</label><select id="startup-mode"><option value="">Не запускать</option><option value="window">Открывать окно</option><option value="taskbar">Свёрнутым в панели задач</option><option value="tray">Скрытым в трее</option></select></div>
           </div>
         </section>
 
