@@ -259,9 +259,18 @@ pub async fn copy_text_to_clipboard(
     app: AppHandle,
     text: String,
     history_level: Option<i64>,
+    paste_source: Option<String>,
     run_id: Option<String>,
 ) -> Result<(), String> {
     let context = super::scenario_output::context(run_id.as_deref())?;
+    #[cfg(windows)]
+    let paste_source = match paste_source.as_deref() {
+        Some("input") => super::clipboard_history::PasteSource::Input,
+        Some("last") => super::clipboard_history::PasteSource::Last,
+        _ => super::clipboard_history::PasteSource::Copy,
+    };
+    #[cfg(not(windows))]
+    let _ = paste_source;
     let history_level = history_level.unwrap_or(-1);
     if history_level > 0 {
         return Err("Уровень в истории должен быть целым числом не больше 0.".into());
@@ -270,7 +279,7 @@ pub async fn copy_text_to_clipboard(
     {
         let _ = app;
         tauri::async_runtime::spawn_blocking(move || {
-            super::clipboard_history::copy_at_level(&text, history_level, context)
+            super::clipboard_history::copy_at_level(&text, history_level, paste_source, context)
         })
         .await
         .map_err(|error| error.to_string())?

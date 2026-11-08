@@ -15,6 +15,8 @@ import { normalizeAfterStopMs } from './recording-stop';
 import {
   canDisableScenarioStep,
   normalizeClipboardHistoryLevel,
+  normalizeClipboardPasteSource,
+  CLIPBOARD_PASTE_SOURCES,
   createStep,
   type ScenarioStepSettingsDefaults,
   getScenarioStepContract,
@@ -620,7 +622,20 @@ export function mountScenarioEditor(
           save();
         });
         label.append(input);
-        content.append(label);
+        const sourceLabel = document.createElement('label');
+        sourceLabel.className = 'scenario-step-setting-label';
+        sourceLabel.textContent = 'Ctrl+V после шага';
+        const sourceSelect = document.createElement('select');
+        sourceSelect.setAttribute('aria-label', 'Что вставит Ctrl+V после шага');
+        for (const [value, name] of CLIPBOARD_PASTE_SOURCES) sourceSelect.add(new Option(name, value));
+        sourceSelect.value = normalizeClipboardPasteSource(step.clipboardPasteSource);
+        sourceSelect.title = 'Входной текст — всегда он. Копия во время сценария — ваша копия, а если не копировали, то входной текст. Последнее в журнале буфера обмена — первое в журнале Win+V, зависит от «Уровня в истории».';
+        sourceSelect.addEventListener('change', () => {
+          step.clipboardPasteSource = normalizeClipboardPasteSource(sourceSelect.value);
+          save();
+        });
+        sourceLabel.append(sourceSelect);
+        content.append(sourceLabel, label);
         appendStepSettings(row, details, summary, content);
       } else if (step.type === 'paste') {
         const details = document.createElement('details');

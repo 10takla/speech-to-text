@@ -60,7 +60,7 @@ describe('recording workflow', () => {
       transcription: { transcribe }, getSettings: () => ({ historyMaxItems: 10, provider: 'none', groqApiKey: '',
         postProcessProvider: 'none', geminiApiKey: '', scenarios: [scenario], activeScenarioId: scenario.id }) });
     expect(await runRecordingWorkflow(new Blob(), dependencies)).toEqual({ status: 'success', text: 'Текст Claude' });
-    expect(output.copy).toHaveBeenCalledWith('Текст Claude', -1);
+    expect(output.copy).toHaveBeenCalledWith('Текст Claude', -1, 'copy');
     expect(output.paste).toHaveBeenCalledWith('Текст Claude', false);
     expect(decodeAudio).not.toHaveBeenCalled(); expect(transcribe).not.toHaveBeenCalled();
   });
@@ -543,7 +543,7 @@ describe('recording workflow', () => {
     dependencies.getSettings = () => ({ ...settings, scenarios: [scenario], activeScenarioId: scenario.id });
     const result = await runRecordingWorkflow(new Blob([new Uint8Array(1000)]), dependencies);
     expect(result.status).toBe('success');
-    expect(output.copy).toHaveBeenCalledWith('Распознанный текст', level);
+    expect(output.copy).toHaveBeenCalledWith('Распознанный текст', level, 'copy');
     expect(output.paste).toHaveBeenCalledWith('Распознанный текст', false);
   });
 
@@ -647,7 +647,7 @@ describe('recording workflow', () => {
     dependencies.getSettings = () => ({ ...settings, scenarios: [scenario], activeScenarioId: scenario.id });
     const result = await runRecordingWorkflow(new Blob([new Uint8Array(1000)]), dependencies);
     expect(result.status).toBe('error');
-    expect(copy).toHaveBeenCalledWith('Распознанный текст', -1);
+    expect(copy).toHaveBeenCalledWith('Распознанный текст', -1, 'copy');
     expect(updates).toContainEqual(expect.objectContaining({
       status: 'error', errorStep: 'Вставка в активное поле', errorMessage: 'Нет активного поля',
     }));

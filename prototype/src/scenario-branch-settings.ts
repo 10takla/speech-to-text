@@ -1,6 +1,6 @@
 import { fetchGeminiTextModels, fetchGroqSpeechModels, type ProviderModel } from './provider-models';
 import { mountSpeechProvider } from './speech-settings-editor';
-import { normalizeClipboardHistoryLevel, type ScenarioStep } from './scenario';
+import { CLIPBOARD_PASTE_SOURCES, normalizeClipboardHistoryLevel, normalizeClipboardPasteSource, type ScenarioStep } from './scenario';
 import { isAndroid } from './android-runtime';
 import { mountGoogleCloudEditor } from './google-cloud/editor';
 import { normalizeGoogleCloudSettings } from './google-cloud/settings';
@@ -144,6 +144,9 @@ export function mountBranchStepSettings(root: HTMLElement, step: ScenarioStep, s
     return;
   }
   if (step.type === 'copy' && !isAndroid) {
+    select('Ctrl+V после шага', normalizeClipboardPasteSource(step.clipboardPasteSource), CLIPBOARD_PASTE_SOURCES, value => {
+      step.clipboardPasteSource = normalizeClipboardPasteSource(value);
+    });
     const level = input('Уровень в истории', step.clipboardHistoryLevel ?? -1, value => {
       step.clipboardHistoryLevel = normalizeClipboardHistoryLevel(Number(value));
     }, 'number');

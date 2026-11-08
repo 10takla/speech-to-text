@@ -159,7 +159,7 @@ export function createBrowserScenarioPreview() {
         const fields: Partial<Record<ScenarioStepType, [string, string, string[]?][]>> = {
           transcribe: [['Провайдер', 'select', ['Groq']], ['Модель', 'select', ['whisper-large-v3-turbo', 'whisper-large-v3']], ['Язык', 'select', ['Авто', 'Русский', 'English']], ['Контекст', 'text']],
           postprocess: [['Провайдер', 'select', ['Google Gemini']], ['Модель', 'text'], ['Промпт преобразования', 'text']],
-          copy: [['Уровень в истории', 'number']],
+          copy: [['Ctrl+V после шага', 'select', ['Копия во время сценария', 'Входной текст', 'Последнее в журнале буфера обмена']], ['Уровень в истории', 'number']],
           paste: [['Звук вставки', 'select', ['Аккорд', 'Клик', 'Нет']]],
           startRecording: [['Микрофон', 'select', ['Системный микрофон']], ['Горячая клавиша', 'text']],
           speak: [['Провайдер', 'select', ['Системный движок']]],

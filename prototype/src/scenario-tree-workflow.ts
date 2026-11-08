@@ -1,7 +1,7 @@
 import { getSpeechMarks, type SpeechMark } from './speech-playback-control';
 import type { RecordingWorkflowDependencies, RecordingWorkflowResult } from './recording-workflow';
 import type { Scenario, ScenarioStep } from './scenario';
-import { getScenarioStepContract, isTriggerStep, normalizeClipboardHistoryLevel } from './scenario';
+import { getScenarioStepContract, isTriggerStep, normalizeClipboardHistoryLevel, normalizeClipboardPasteSource } from './scenario';
 import { walkScenarioSteps } from './scenario-tree';
 import type { HistoryItem, HistoryStep } from './history-db';
 import type { OverlayStepStatus } from './OverlaySteps';
@@ -143,7 +143,7 @@ export async function runScenarioTree(audio: Blob, scenario: Scenario, dependenc
       } else if (step.type === 'copy' || step.type === 'paste') {
         if (input.type !== 'text') throw new Error('Действию требуется текст.');
         const action = () => step.type === 'copy'
-          ? dependencies.output.copy(input.text, normalizeClipboardHistoryLevel(step.clipboardHistoryLevel))
+          ? dependencies.output.copy(input.text, normalizeClipboardHistoryLevel(step.clipboardHistoryLevel), normalizeClipboardPasteSource(step.clipboardPasteSource))
           : dependencies.output.paste(input.text, step.returnFocusToOriginalWindow === true);
         await (dependencies.runAction ? dependencies.runAction(step, action) : action());
         if (step.type === 'paste' && !signal?.aborted) dependencies.onInsertSound?.();

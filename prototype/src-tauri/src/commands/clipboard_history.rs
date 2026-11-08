@@ -442,7 +442,23 @@ impl CopyClipboard {
         Ok(())
     }
 
-    fn finish(&mut self, text: &str) -> Result<(), String> {
+    fn finish(&mut self, text: &str, source: PasteSource) -> Result<(), String> {
+        match source {
+            // Ctrl+V keeps the top of the Windows history: the text at level 0,
+            // otherwise the entry that was recopied above it.
+            PasteSource::Last => return Ok(()),
+            // Ctrl+V gets the text even over a copy made by the user.
+            PasteSource::Input => {
+                self.restore = None;
+                let current = clipboard_sequence();
+                if current != self.sequence {
+                    current_clipboard().lock().map_err(|error| error.to_string())?.observe(current);
+                    self.sequence = current;
+                    self.published_text = None;
+                }
+            }
+            PasteSource::Copy => {}
+        }
         // A later user copy already is the desired current content. Do not
         // read it back or keep retrying restoration while the user copies.
         let current = clipboard_sequence();
@@ -479,10 +495,23 @@ impl CopyClipboard {
     }
 }
 
-pub fn copy_at_level(text: &str, level: i64, context: Option<Arc<RunOutput>>) -> Result<(), String> {
+// What Ctrl+V pastes after the copy step.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PasteSource {
+    // The input text, even over the user's copy.
+    Input,
+    // The user's copy made during the scenario, otherwise the input text.
+    Copy,
+    // The top of the Windows clipboard history.
+    Last,
+}
+
+pub fn copy_at_level(text: &str, level: i64, source: PasteSource, context: Option<Arc<RunOutput>>) -> Result<(), String> {
     let started = Instant::now();
     log::info!(
-        "clipboard: start level={level}, text={}", preview(text)
+        "clipboard: start level={level}, ctrl_v={}, text={}",
+        match source { PasteSource::Input => "input", PasteSource::Copy => "copy", PasteSource::Last => "last" },
+        preview(text)
     );
     let result = on_clipboard_thread(context, || {
         let mut clipboard = CopyClipboard::new()?;
@@ -491,7 +520,7 @@ pub fn copy_at_level(text: &str, level: i64, context: Option<Arc<RunOutput>>) ->
         // clipboard. Cleanup reads retain their individual Windows timeout.
         OPERATION_GENERATION.with(|value| value.set(None));
         RUN_CONTEXT.with(|value| *value.borrow_mut() = None);
-        let restore = clipboard.finish(text);
+        let restore = clipboard.finish(text, source);
         match (result, restore) {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),

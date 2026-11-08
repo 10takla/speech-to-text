@@ -1,6 +1,6 @@
 import type { HistoryItem } from './history-db';
 import type { TimedTranscript } from './groq';
-import type { ClipboardHistoryLevel } from './scenario';
+import type { ClipboardHistoryLevel, ClipboardPasteSource } from './scenario';
 
 export interface TranscriptionProvider {
   transcribe(audio: Blob, signal?: AbortSignal): Promise<TimedTranscript>;
@@ -27,6 +27,6 @@ export interface AudioCapturePort {
 }
 
 export interface TextOutputPort {
-  copy(text: string, historyLevel?: ClipboardHistoryLevel): Promise<void>;
+  copy(text: string, historyLevel?: ClipboardHistoryLevel, pasteSource?: ClipboardPasteSource): Promise<void>;
   paste(text: string, returnFocusToOriginalWindow?: boolean): Promise<void>;
 }

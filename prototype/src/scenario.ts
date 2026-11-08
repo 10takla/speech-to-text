@@ -26,6 +26,21 @@ export function normalizeClipboardHistoryLevel(value: unknown): ClipboardHistory
     ? value : DEFAULT_CLIPBOARD_HISTORY_LEVEL;
 }
 
+// What Ctrl+V pastes after the copy step: its input text, the user's copy made
+// during the scenario (else the input text), or the top of the Windows history.
+export type ClipboardPasteSource = 'input' | 'copy' | 'last';
+export const DEFAULT_CLIPBOARD_PASTE_SOURCE: ClipboardPasteSource = 'copy';
+export const CLIPBOARD_PASTE_SOURCES: [ClipboardPasteSource, string][] = [
+  ['copy', 'Копия во время сценария'],
+  ['input', 'Входной текст'],
+  ['last', 'Последнее в журнале буфера обмена'],
+];
+
+export function normalizeClipboardPasteSource(value: unknown): ClipboardPasteSource {
+  return CLIPBOARD_PASTE_SOURCES.some(([id]) => id === value)
+    ? value as ClipboardPasteSource : DEFAULT_CLIPBOARD_PASTE_SOURCE;
+}
+
 export interface ScenarioSoundSettingsDefaults {
   enabled: boolean;
   profile: ScenarioSoundProfile;
@@ -64,6 +79,7 @@ export interface ScenarioStep {
   soundProfile?: ScenarioSoundProfile;
   soundSuccess?: ScenarioInsertSound;
   clipboardHistoryLevel?: ClipboardHistoryLevel;
+  clipboardPasteSource?: ClipboardPasteSource;
   returnFocusToOriginalWindow?: boolean;
   transcription?: TranscriptionStepSettings;
   postprocessing?: PostprocessingStepSettings;
@@ -518,7 +534,10 @@ function normalizeStep(
       ? value.soundSuccess
       : soundDefaults.insert;
   }
-  if (step.type === 'copy') step.clipboardHistoryLevel = normalizeClipboardHistoryLevel(value.clipboardHistoryLevel);
+  if (step.type === 'copy') {
+    step.clipboardHistoryLevel = normalizeClipboardHistoryLevel(value.clipboardHistoryLevel);
+    step.clipboardPasteSource = normalizeClipboardPasteSource(value.clipboardPasteSource);
+  }
   if (step.type === 'transcribe') step.transcription = normalizeTranscriptionSettings(value.transcription, defaults.transcription);
   if (step.type === 'postprocess') step.postprocessing = normalizePostprocessingSettings(value.postprocessing, defaults.postprocessing);
   if (step.type === 'speak') {

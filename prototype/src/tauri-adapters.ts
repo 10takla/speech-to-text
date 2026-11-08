@@ -1,7 +1,7 @@
 import type { invoke as TauriInvoke } from '@tauri-apps/api/core';
 import type { AudioCapturePort, TextOutputPort } from './ports';
 import { invokeCommand } from './tauri-commands';
-import { DEFAULT_CLIPBOARD_HISTORY_LEVEL } from './scenario';
+import { DEFAULT_CLIPBOARD_HISTORY_LEVEL, DEFAULT_CLIPBOARD_PASTE_SOURCE } from './scenario';
 import { isAndroid, androidCall, androidAudio } from './android-runtime';
 import { normalizeAfterStopMs, waitForStopTail } from './recording-stop';
 
@@ -41,7 +41,7 @@ export function createTauriAudioCapture(invoke: typeof TauriInvoke): AudioCaptur
 
 export function createTauriTextOutput(invoke: typeof TauriInvoke, runId?: string): TextOutputPort {
   return {
-    copy: (text, historyLevel = DEFAULT_CLIPBOARD_HISTORY_LEVEL) => invokeCommand(invoke, 'copy_text_to_clipboard', { text, historyLevel, ...(runId && { runId }) }),
+    copy: (text, historyLevel = DEFAULT_CLIPBOARD_HISTORY_LEVEL, pasteSource = DEFAULT_CLIPBOARD_PASTE_SOURCE) => invokeCommand(invoke, 'copy_text_to_clipboard', { text, historyLevel, pasteSource, ...(runId && { runId }) }),
     paste: (text, returnFocusToOriginalWindow = false) => invokeCommand(invoke, 'paste_text_into_active_window', { text, returnFocusToOriginalWindow, ...(runId && { runId }) }),
   };
 }

@@ -5,7 +5,7 @@ import type { RecordingFragment, TimeRange } from './recording-editor';
 import { appendRecordingFragments, combineFragments, mergeRanges, retainedRanges } from './recording-editor';
 import { errorMessage } from './error-message';
 import { fitTranscriptToAudio } from './transcript-timing';
-import { createDefaultScenario, getScenarioStepContract, isTriggerStep, normalizeClipboardHistoryLevel, validateScenario, type Scenario } from './scenario';
+import { createDefaultScenario, getScenarioStepContract, isTriggerStep, normalizeClipboardHistoryLevel, normalizeClipboardPasteSource, validateScenario, type Scenario } from './scenario';
 import type { HistoryStep, HistoryStepStatus } from './history-db';
 import type { TranscriptSegment } from './groq';
 import type { OverlayStepStatus } from './OverlaySteps';
@@ -329,7 +329,7 @@ export async function runRecordingWorkflow(
           try {
             if (signal?.aborted) return;
             dependencies.onStage(action.type === 'paste' ? 'Вставка в активное поле...' : 'Буфер обмена...');
-            if (action.type === 'copy') await runAction(action, () => dependencies.output.copy(inputText, normalizeClipboardHistoryLevel(action.clipboardHistoryLevel)));
+            if (action.type === 'copy') await runAction(action, () => dependencies.output.copy(inputText, normalizeClipboardHistoryLevel(action.clipboardHistoryLevel), normalizeClipboardPasteSource(action.clipboardPasteSource)));
             else if (action.type === 'paste') {
               await runAction(action, () => dependencies.output.paste(inputText, action.returnFocusToOriginalWindow === true));
               if (!signal?.aborted) dependencies.onInsertSound?.();
@@ -405,7 +405,7 @@ export async function runRecordingWorkflow(
           dependencies.onInsertSound?.();
         } else if (step.type === 'copy') {
           if (signal?.aborted) return { status: 'cancelled' };
-          await runAction(step, () => dependencies.output.copy(finalText, normalizeClipboardHistoryLevel(step.clipboardHistoryLevel)));
+          await runAction(step, () => dependencies.output.copy(finalText, normalizeClipboardHistoryLevel(step.clipboardHistoryLevel), normalizeClipboardPasteSource(step.clipboardPasteSource)));
         }
         console.info(`Этап «${stage}»: ${Math.round(performance.now() - startedAt)} мс`);
         persistStepStatus(stepIndex, 'success', undefined,

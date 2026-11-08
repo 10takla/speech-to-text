@@ -60,6 +60,8 @@ it('compares effective defaults and ignores notification/display settings', () =
   expect(matches([...input(), a, b]).size).toBe(2);
   b.clipboardHistoryLevel = 0;
   expect(matches([...input(), a, b]).size).toBe(0);
+  b.clipboardHistoryLevel = -1; b.clipboardPasteSource = 'input';
+  expect(matches([...input(), a, b]).size).toBe(0);
   expect(findScenarioDuplicates({id:'test',name:'Test',steps:[...input(),a,b]},DEFAULT_SCENARIO_STEP_SETTINGS,false).size).toBe(2);
 });
 

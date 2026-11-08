@@ -38,7 +38,7 @@ type CommandContract = {
   begin_scenario_output: { args: { runId: string }; result: void };
   finish_scenario_output: { args: { runId: string }; result: void };
   cancel_scenario_output: { args: { runId: string }; result: void };
-  copy_text_to_clipboard: { args: { text: string; historyLevel: number; runId?: string }; result: void };
+  copy_text_to_clipboard: { args: { text: string; historyLevel: number; pasteSource: string; runId?: string }; result: void };
   write_clipboard_text: { args: { text: string }; result: void };
   save_recording_file: { args: { filename: string; data: string }; result: boolean };
   get_app_logs: { args: undefined; result: string };

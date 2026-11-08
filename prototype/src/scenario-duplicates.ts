@@ -1,5 +1,5 @@
 import { DEFAULT_SCENARIO_STEP_SETTINGS, getScenarioStepContract, normalizeClipboardHistoryLevel,
-  type Scenario, type ScenarioStep, type ScenarioStepSettingsDefaults } from './scenario';
+  normalizeClipboardPasteSource, type Scenario, type ScenarioStep, type ScenarioStepSettingsDefaults } from './scenario';
 import { normalizeSpeechSettings } from './speech-settings';
 import { normalizeSpeechProvider, normalizeSpeechProviders } from './speech-provider-settings';
 
@@ -11,7 +11,8 @@ function canonical(value: unknown): string {
 }
 
 function significantSettings(step: ScenarioStep, defaults: ScenarioStepSettingsDefaults, clipboardHistory: boolean): unknown {
-  if (step.type === 'copy') return clipboardHistory ? normalizeClipboardHistoryLevel(step.clipboardHistoryLevel) : null;
+  if (step.type === 'copy') return clipboardHistory
+    ? [normalizeClipboardHistoryLevel(step.clipboardHistoryLevel), normalizeClipboardPasteSource(step.clipboardPasteSource)] : null;
   if (step.type === 'paste') return clipboardHistory ? step.returnFocusToOriginalWindow === true : null;
   if (step.type === 'transcribe') {
     const s = step.transcription ?? defaults.transcription;
