@@ -268,15 +268,19 @@ fn with_console<T>(session: &Session, operation: impl FnOnce() -> Result<T, Stri
             if AttachConsole(session.pid) != 0 { attached = true; error = None; }
             else { error = Some(failure("Не удалось подключиться к консоли Claude Code")); }
         }
+        // Attaching gives a process without standard handles Claude's console as
+        // stdout/stderr, so anything another thread prints would land in Claude's prompt.
+        let restore_handles = || { for (kind, handle) in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE].into_iter().zip(standard_handles) { SetStdHandle(kind, handle); } };
         let result = if let Some(error) = error {
             Err(error)
         } else {
+            restore_handles();
             let result = operation();
             FreeConsole();
             result
         };
         if had_console { AttachConsole(ATTACH_PARENT_PROCESS); }
-        for (kind, handle) in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE].into_iter().zip(standard_handles) { SetStdHandle(kind, handle); }
+        restore_handles();
         result
     }
 }

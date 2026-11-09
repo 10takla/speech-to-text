@@ -45,10 +45,10 @@ use crate::app_state::{ControlHotkeyState, PasteTargetState, RecordHotkeyState, 
 
 pub fn run() {
     let mut targets = vec![
-            tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
             tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
     ];
     if cfg!(debug_assertions) {
+        targets.push(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout));
         targets.push(
             tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Folder {
                 path: crate::runtime_logs::dev_logs_dir(),
@@ -56,6 +56,9 @@ pub fn run() {
             }),
         );
     } else {
+        // No Stdout in release: while the app is attached to Claude's console
+        // (it has none of its own), log lines would be printed into that console
+        // and typed into Claude's prompt.
         targets.push(crate::runtime_logs::target());
         targets.push(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
             file_name: Some("app".to_string()),
