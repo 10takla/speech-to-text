@@ -330,7 +330,7 @@ fn screen(session: &Session) -> Result<Vec<u16>, String> {
 fn prompt_colours(session: &Session, screen: &[u16]) -> String {
     let text = String::from_utf16_lossy(screen);
     let rows: Vec<&str> = text.lines().collect();
-    let Some(row) = rows.iter().rposition(|row| row.trim_start().starts_with('❯')) else { return "-".into() };
+    let Some(row) = rows.iter().rposition(|row| is_prompt_row(row)) else { return "-".into() };
     let chars: Vec<char> = rows[row].chars().collect();
     let read = with_console(session, || unsafe {
         let handle = CreateFileW(wide("CONOUT$").as_ptr(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
@@ -350,7 +350,7 @@ fn prompt_colours(session: &Session, screen: &[u16]) -> String {
     let Ok(attrs) = read else { return "?".into() };
     let mut seen: Vec<(u16, usize)> = Vec::new();
     for (c, attr) in chars.iter().zip(attrs) {
-        if c.is_whitespace() || *c == '❯' || ('▁'..='█').contains(c) { continue; }
+        if c.is_whitespace() || PROMPT_MARKERS.contains(c) || ('▁'..='█').contains(c) { continue; }
         match seen.iter_mut().find(|(a, _)| *a == attr) { Some((_, n)) => *n += 1, None => seen.push((attr, 1)) }
     }
     seen.iter().map(|(a, n)| format!("{a:04x}×{n}")).collect::<Vec<_>>().join(" ")
@@ -408,15 +408,23 @@ fn start_hook_server(dir: PathBuf) -> Result<String, String> {
     Ok(url)
 }
 
+// Claude draws the prompt marker as `❯` when the console is known to support
+// Unicode and as `>` otherwise. The release app, started from Explorer or at
+// sign-in rather than from a terminal, gets `>`, and then no `❯` ever appears.
+const PROMPT_MARKERS: [char; 2] = ['❯', '>'];
+
+fn is_prompt_row(row: &str) -> bool { row.trim_start().starts_with(PROMPT_MARKERS) }
+
 // The prompt text Claude shows while dictating. Claude has no API for the
-// interim transcript, so this reads its rendering, relying only on the `❯`
-// prompt marker and the `────` rule below the (possibly wrapped) input.
+// interim transcript, so this reads its rendering, relying only on the prompt
+// marker and the `────` rule below the (possibly wrapped) input.
 // None means the layout was not recognised (e.g. after a Claude update).
 fn prompt_text(screen: &[u16]) -> Option<String> {
     let text = String::from_utf16_lossy(screen);
     let rows: Vec<&str> = text.lines().collect();
-    let start = rows.iter().rposition(|row| row.trim_start().starts_with('❯'))?;
-    let mut parts = vec![rows[start].trim_start().trim_start_matches('❯')];
+    let start = rows.iter().rposition(|row| is_prompt_row(row))?;
+    let first = rows[start].trim_start();
+    let mut parts = vec![first.strip_prefix(PROMPT_MARKERS).unwrap_or(first)];
     let mut closed = false;
     for row in rows.iter().skip(start + 1).take(30) {
         let trimmed = row.trim();
@@ -970,7 +978,9 @@ mod tests {
         let rule = "────────";
         let wrapped = rows(&[rule, "❯ первая часть длинной", "  фразы продолжается█", rule]);
         assert_eq!(prompt_text(&wrapped).as_deref(), Some("первая часть длинной фразы продолжается"));
-        assert_eq!(prompt_text(&rows(&["> другой интерфейс", rule])), None);
+        // The release app gets the ASCII marker.
+        assert_eq!(prompt_text(&rows(&[rule, "> текст без юникода▃", rule])).as_deref(), Some("текст без юникода"));
+        assert_eq!(prompt_text(&rows(&["другой интерфейс", rule])), None);
         assert_eq!(prompt_text(&rows(&["❯ без нижней линии"])), None);
     }
 
