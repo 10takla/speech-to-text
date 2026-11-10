@@ -450,6 +450,11 @@ fn clear_prompt(session: &Session) -> Result<(), String> { clear_prompt_unless(s
 // Stops between passes once `cancelled` holds: up to 40 passes may take 20 s.
 fn clear_prompt_unless(session: &Session, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
     let mut changes = ConsoleWait::new(session.hwnd);
+    // Reading the screen ignores spaces, but a space left in the prompt makes the
+    // next Space type instead of recording. A failed start leaves exactly such a
+    // space, so erase blindly once before trusting the screen.
+    key(session, 0x55, 0x15, LEFT_CTRL_PRESSED)?;
+    key(session, 0x08, 0x08, 0)?;
     for attempt in 0..40 {
         if attempt > 0 && cancelled() {
             log::info!("Claude Code start cancelled while clearing the prompt");
