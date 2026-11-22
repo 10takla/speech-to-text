@@ -1,10 +1,21 @@
-importScripts('config.js');
-
+let bridgeUrl = '';
 let es = null;
 
-function post(payload) {
-  if (typeof BRIDGE_URL !== 'string' || !BRIDGE_URL) return Promise.resolve();
-  return fetch(`${BRIDGE_URL}/state`, {
+async function loadBridgeUrl() {
+  try {
+    const res = await fetch(chrome.runtime.getURL('config.json'), { cache: 'no-store' });
+    const cfg = await res.json();
+    if (cfg && typeof cfg.bridgeUrl === 'string' && cfg.bridgeUrl) {
+      bridgeUrl = cfg.bridgeUrl;
+    }
+  } catch {}
+  return bridgeUrl;
+}
+
+async function post(payload) {
+  const url = bridgeUrl || await loadBridgeUrl();
+  if (!url) return;
+  return fetch(`${url}/state`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -25,13 +36,17 @@ function sendToClaudeTab(cmd) {
   });
 }
 
-function connect() {
-  if (typeof BRIDGE_URL !== 'string' || !BRIDGE_URL) return;
+async function connect() {
+  const url = await loadBridgeUrl();
+  if (!url) {
+    setTimeout(connect, 1000);
+    return;
+  }
   if (es) es.close();
-  es = new EventSource(`${BRIDGE_URL}/events`);
+  es = new EventSource(`${url}/events`);
   es.onopen = () => {
     void post({ event: 'ready' });
-    void post({ event: 'debug', message: 'background: SSE connected' });
+    void post({ event: 'debug', message: `background: SSE connected (${url})` });
   };
   es.onmessage = (e) => {
     void post({ event: 'debug', message: `background: cmd=${e.data}` });
@@ -45,16 +60,16 @@ function connect() {
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (!es) connect();
+  if (!es) void connect();
   if (msg && msg.event) void post(msg);
 });
 
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== 'keepalive') return;
-  if (!es) connect();
+  if (!es) void connect();
   port.onMessage.addListener(() => {
-    if (!es) connect();
+    if (!es) void connect();
   });
 });
 
-connect();
+void connect();

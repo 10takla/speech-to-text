@@ -69,25 +69,14 @@ fn push_command(cmd: &'static str) {
     }
 }
 
-const BRIDGE_PORT: u16 = 18765;
-const BRIDGE_TOKEN: &str = "claude-chat-bridge";
-
 fn start_bridge_server() -> Result<(u16, String), String> {
-    let mut listener = None;
-    for _ in 0..5 {
-        if let Ok(bound) = TcpListener::bind(("127.0.0.1", BRIDGE_PORT)) {
-            listener = Some(bound);
-            break;
-        }
-        sleep(Duration::from_millis(150));
-    }
-    let listener = match listener {
-        Some(bound) => bound,
-        None => TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?,
-    };
+    use std::hash::{BuildHasher, Hasher};
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     log::info!("Claude Chat bridge listening on 127.0.0.1:{port}");
-    let token = BRIDGE_TOKEN.to_owned();
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+    let token = format!("{:016x}{:016x}", hasher.finish(), std::collections::hash_map::RandomState::new().build_hasher().finish());
     let events_path = format!("/{token}/events");
     let state_path = format!("/{token}/state");
 
@@ -237,7 +226,8 @@ fn prepare_extension_dir(port: u16, token: &str) -> Result<PathBuf, String> {
     std::fs::write(ext_dir.join("manifest.json"), include_str!("extension/manifest.json")).map_err(|e| e.to_string())?;
     std::fs::write(ext_dir.join("background.js"), include_str!("extension/background.js")).map_err(|e| e.to_string())?;
     std::fs::write(ext_dir.join("content.js"), include_str!("extension/content.js")).map_err(|e| e.to_string())?;
-    std::fs::write(ext_dir.join("config.js"), format!("const BRIDGE_URL = \"http://127.0.0.1:{port}/{token}\";\n")).map_err(|e| e.to_string())?;
+    std::fs::write(ext_dir.join("config.json"), format!("{{\"bridgeUrl\":\"http://127.0.0.1:{port}/{token}\"}}\n")).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(ext_dir.join("config.js"));
     Ok(ext_dir)
 }
 
