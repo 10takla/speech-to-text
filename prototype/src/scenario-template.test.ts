@@ -44,11 +44,11 @@ it('updates previous built-in prompts in copies and branches without replacing u
 it('replaces only the previous language-specific prompt, including copied branches', () => {
   const settings = defaultSettings(); settings.scenarioVersion = 15;
   settings.scenarios[0].steps[1].transcription!.prompt = LEGACY_VOICE_TRANSCRIPTION_PROMPT;
-  appendScenarioCopy(settings.scenarios, settings.scenarios[0]);
+  const copy = appendScenarioCopy(settings.scenarios, settings.scenarios[0]);
   settings.scenarios[1].steps[1].transcription!.prompt = 'Custom vocabulary';
   const migrated = normalizeSettings(settings);
   expect(migrated.scenarios[0].steps[1].transcription?.prompt).toBe(VOICE_TRANSCRIPTION_PROMPT);
-  expect(migrated.scenarios[4].steps[1].transcription?.prompt).toBe(VOICE_TRANSCRIPTION_PROMPT);
+  expect(migrated.scenarios.find(item => item.id === copy.id)?.steps[1].transcription?.prompt).toBe(VOICE_TRANSCRIPTION_PROMPT);
   expect(migrated.scenarios[1].steps[1].transcription?.prompt).toBe('Custom vocabulary');
 });
 
@@ -164,7 +164,7 @@ describe('editable initial scenarios', () => {
     const saved = structuredClone(scenario.steps);
     const first = parseSettingsJson(JSON.stringify(settings));
     const second = parseSettingsJson(JSON.stringify(first));
-    expect(second.scenarios).toHaveLength(4);
+    expect(second.scenarios).toHaveLength(5);
     expect(second.activeScenarioId).toBe(id);
     expect(second.scenarios.find(item => item.id === id)).toMatchObject({ name: 'Мой сценарий', enabled: true, steps: saved });
   });
@@ -183,7 +183,7 @@ describe('editable initial scenarios', () => {
 
   it('does not restore deleted scenarios, including an empty list', () => {
     const settings = defaultSettings(); settings.scenarios.splice(0, 1);
-    expect(normalizeSettings(settings).scenarios.map(item => item.id)).toEqual(['voice-answer-scenario', 'selected-text-speech-scenario', 'claude-code-test']);
+    expect(normalizeSettings(settings).scenarios.map(item => item.id)).toEqual(['voice-answer-scenario', 'selected-text-speech-scenario', 'claude-code-test', 'antigravity-cli-test']);
     settings.scenarios = [];
     const empty = parseSettingsJson(JSON.stringify(settings));
     expect(empty.scenarios).toEqual([]); expect(empty.activeScenarioId).toBe('');
@@ -234,7 +234,7 @@ describe('immutable templates and explicit creation', () => {
     expect(created).toMatchObject({ id, name: 'Свой ответ', enabled: true, templateId: 'voice-answer-scenario' });
     expect(created.steps.map(step => step.type)).toEqual(['startRecording', 'transcribe', 'postprocess', 'speak']);
     expect(created.steps[2].postprocessing!.prompt).toBe(scenarioTemplates()[1].steps[2].postprocessing!.prompt);
-    expect(settings.scenarios).toHaveLength(5);
+    expect(settings.scenarios).toHaveLength(6);
   });
 
   it('retains manual-copy settings and template association without inheriting trigger ownership', () => {

@@ -9,6 +9,13 @@ type CommandContract = {
   prepare_claude_code: { args: { enabled: boolean }; result: void };
   poll_claude_dictation: { args: { runId: string; live: boolean; known: string | null }; result: { finished: boolean; text: string | null } };
   claude_code_running: { args: undefined; result: boolean };
+  open_antigravity_cli: { args: undefined; result: void };
+  cancel_antigravity_cli: { args: { runId: string } | undefined; result: void };
+  start_antigravity_dictation: { args: { runId: string }; result: void };
+  stop_antigravity_dictation: { args: { runId: string; afterStopMs?: number; firstWordWaitMs?: number }; result: string };
+  prepare_antigravity_cli: { args: { enabled: boolean }; result: void };
+  poll_antigravity_dictation: { args: { runId: string; live: boolean; known: string | null }; result: { finished: boolean; text: string | null } };
+  antigravity_cli_running: { args: undefined; result: boolean };
   get_selected_text: { args: { runId: string }; result: string };
   get_start_in: { args: undefined; result: '' | 'window' | 'taskbar' | 'tray' };
   set_start_in: { args: { mode: '' | 'window' | 'taskbar' | 'tray' }; result: void };

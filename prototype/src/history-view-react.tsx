@@ -102,9 +102,9 @@ const statusLabels = {
 export function HistoryRecord({ record }: { record: HistoryItem }) {
   // Claude Code is the recognition step of its scenarios: its text and the
   // app's parallel recording belong inside it, not in a separate block below.
-  const transcriptStep = record.steps?.findIndex(step => step.type === 'transcribe' || step.type === 'claudeCode') ?? -1;
+  const transcriptStep = record.steps?.findIndex(step => step.type === 'transcribe' || step.type === 'claudeCode' || step.type === 'antigravityCli') ?? -1;
   const lastTextStep = record.steps?.findLastIndex(step =>
-    (step.type === 'postprocess' || step.type === 'transcribe' || step.type === 'claudeCode' || step.type === 'selectedText') && step.status === 'success') ?? -1;
+    (step.type === 'postprocess' || step.type === 'transcribe' || step.type === 'claudeCode' || step.type === 'antigravityCli' || step.type === 'selectedText') && step.status === 'success') ?? -1;
   const legacyError = !record.steps?.length && record.errorMessage ? (
     <div className="history-step history-step--error">
       <span className="history-step-title">{record.errorStep || 'Ошибка сценария'}</span>
@@ -133,14 +133,14 @@ export function HistoryRecord({ record }: { record: HistoryItem }) {
               : step.text?.trim() && <div className="history-transcript history-step-transcript">
                 <div className="history-transcript-text">{step.text}</div>
               </div>)}
-            {index === transcriptStep && step.type !== 'claudeCode' && <HistoryTranscript record={record} inStep />}
-            {/* Claude returns plain text without timed segments: show it as is,
+            {index === transcriptStep && step.type !== 'claudeCode' && step.type !== 'antigravityCli' && <HistoryTranscript record={record} inStep />}
+            {/* Claude / Antigravity CLI return plain text without timed segments: show it as is,
                 and the recording as a plain player rather than a segment track. */}
-            {(step.type === 'postprocess' || step.type === 'claudeCode' || step.type === 'selectedText' || step.type === 'transcribe' && index !== transcriptStep) && step.status === 'success' &&
+            {(step.type === 'postprocess' || step.type === 'claudeCode' || step.type === 'antigravityCli' || step.type === 'selectedText' || step.type === 'transcribe' && index !== transcriptStep) && step.status === 'success' &&
               <div className="history-transcript history-step-transcript">
                 <div className="history-transcript-text">{step.text ?? (index === lastTextStep ? record.text : '')}</div>
               </div>}
-            {step.type === 'claudeCode' && (audio => audio && <HistoryClaudeRecording record={record} audio={audio} />)(historyRecordingAudio(record))}
+            {(step.type === 'claudeCode' || step.type === 'antigravityCli') && (audio => audio && <HistoryClaudeRecording record={record} audio={audio} />)(historyRecordingAudio(record))}
           </div>
         ))}
       </div>}

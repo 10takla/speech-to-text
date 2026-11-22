@@ -97,9 +97,9 @@ it('migrates only the previously selected scenario to enabled', () => {
   settings.activeScenarioId = settings.scenarios[1].id;
   for (const scenario of settings.scenarios) delete scenario.enabled;
   const migrated = normalizeSettings(settings);
-  expect(migrated.scenarios.map(scenario => scenario.enabled)).toEqual([false, true, false, false]);
+  expect(migrated.scenarios.map(scenario => scenario.enabled)).toEqual([false, true, false, false, false]);
   migrated.scenarios[0].enabled = true;
-  expect(normalizeSettings(migrated).scenarios.map(scenario => scenario.enabled)).toEqual([true, true, false, false]);
+  expect(normalizeSettings(migrated).scenarios.map(scenario => scenario.enabled)).toEqual([true, true, false, false, false]);
 });
 
 it('runs the triggered scenario with its own provider settings and a stable snapshot', () => {

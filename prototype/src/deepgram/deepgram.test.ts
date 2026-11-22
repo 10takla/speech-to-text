@@ -115,35 +115,61 @@ describe('deepgram settings and query builder', () => {
       model: 'nova-3',
       language: 'multi',
       smartFormat: true,
+      punctuate: true,
+      numerals: false,
       interimResults: true,
       diarize: false,
+      fillerWords: false,
+      profanityFilter: false,
+      mipOptOut: false,
       endpointingMs: 300,
+      utteranceEndMs: 0,
+      redact: '',
       keyterms: [],
+      replace: [],
     });
     expect(deepgramConfigurationError({ apiKey: '' })).toBe('Deepgram: укажите API-ключ.');
     expect(deepgramConfigurationError({ apiKey: 'k', endpointingMs: 5 })).toContain('пауза фиксации');
     expect(deepgramConfigurationError({ apiKey: 'k', endpointingMs: 0 })).toBeNull();
+    expect(deepgramConfigurationError({ apiKey: 'k', utteranceEndMs: 500 })).toContain('конец фразы');
+    expect(deepgramConfigurationError({ apiKey: 'k', utteranceEndMs: 1200, interimResults: false })).toContain('Промежуточный текст на лету');
+    expect(deepgramConfigurationError({ apiKey: 'k', replace: ['invalid'] })).toContain('что:на_что');
+    expect(deepgramConfigurationError({ apiKey: 'k', replace: ['дипграм:Deepgram'], utteranceEndMs: 1200 })).toBeNull();
     expect(deepgramConfigurationError(defaults)).toBeNull();
   });
 
-  it('builds nova-3 keyterm and nova-2 keywords query parameters', () => {
+  it('builds nova-3 keyterm and nova-2 keywords query parameters along with extended options', () => {
     const s3 = normalizeDeepgramSettings({
       apiKey: 'k',
       model: 'nova-3',
       language: 'multi',
+      numerals: true,
       diarize: true,
+      fillerWords: true,
+      profanityFilter: true,
+      mipOptOut: true,
+      redact: 'pci',
       endpointingMs: 350,
+      utteranceEndMs: 1200,
       keyterms: ['Antigravity', 'Deepgram'],
+      replace: ['дипграм:Deepgram', 'нова:Nova'],
     });
     const q3 = deepgramListenQuery(s3, { sampleRate: 16_000, channels: 1 });
     expect(q3.get('model')).toBe('nova-3');
     expect(q3.get('language')).toBe('multi');
     expect(q3.get('smart_format')).toBe('true');
+    expect(q3.get('numerals')).toBe('true');
     expect(q3.get('diarize')).toBe('true');
+    expect(q3.get('filler_words')).toBe('true');
+    expect(q3.get('profanity_filter')).toBe('true');
+    expect(q3.get('mip_opt_out')).toBe('true');
+    expect(q3.get('redact')).toBe('pci');
     expect(q3.getAll('keyterm')).toEqual(['Antigravity', 'Deepgram']);
     expect(q3.getAll('keywords')).toEqual([]);
+    expect(q3.getAll('replace')).toEqual(['дипграм:Deepgram', 'нова:Nova']);
     expect(q3.get('interim_results')).toBe('true');
     expect(q3.get('endpointing')).toBe('350');
+    expect(q3.get('utterance_end_ms')).toBe('1200');
     expect(q3.get('encoding')).toBe('linear16');
     expect(q3.get('sample_rate')).toBe('16000');
 
@@ -152,13 +178,14 @@ describe('deepgram settings and query builder', () => {
       model: 'nova-2',
       language: 'ru',
       smartFormat: false,
+      punctuate: true,
       keyterms: ['термин'],
     });
     const q2 = deepgramListenQuery(s2);
     expect(q2.get('model')).toBe('nova-2');
     expect(q2.get('language')).toBe('ru');
     expect(q2.get('smart_format')).toBe('false');
-    expect(q2.get('punctuate')).toBe('false');
+    expect(q2.get('punctuate')).toBe('true');
     expect(q2.getAll('keywords')).toEqual(['термин']);
     expect(q2.getAll('keyterm')).toEqual([]);
   });

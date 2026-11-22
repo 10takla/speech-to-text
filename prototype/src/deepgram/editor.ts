@@ -1,6 +1,12 @@
 import type { ProviderModel } from '../provider-models';
 import { fetchDeepgramCatalog } from './catalog';
-import { DEEPGRAM_LANGUAGES, deepgramConfigurationError, type DeepgramSettings } from './settings';
+import {
+  DEEPGRAM_LANGUAGES,
+  DEEPGRAM_REDACT_OPTIONS,
+  deepgramConfigurationError,
+  type DeepgramRedact,
+  type DeepgramSettings,
+} from './settings';
 
 type Status = (text: string, state: 'idle' | 'ready' | 'error', details: string) => void;
 export interface DeepgramEditorHostControls {
@@ -72,7 +78,7 @@ export function mountDeepgramEditor(
   key.setAttribute('aria-label', 'API ключ Deepgram');
   keyField.field.append(key);
 
-  // Row 2: Model (+ refresh button + model count/info), Language, Endpointing
+  // Row 2: Model (+ refresh button + model count/info), Language, Redact
   const mainGrid = document.createElement('div');
   mainGrid.className = 'form-grid form-grid--spaced';
   root.append(mainGrid);
@@ -119,7 +125,19 @@ export function mountDeepgramEditor(
   language.value = settings.language;
   languageField.field.append(language);
 
-  const endpointingField = makeField(mainGrid, 'Пауза фиксации', false, 'compact-input-row');
+  const redactField = makeField(mainGrid, 'Скрытие данных');
+  const redact = document.createElement('select');
+  redact.setAttribute('aria-label', 'Скрытие чувствительных данных (redact)');
+  DEEPGRAM_REDACT_OPTIONS.forEach(([id, title]) => redact.add(new Option(title, id)));
+  redact.value = settings.redact;
+  redactField.field.append(redact);
+
+  // Row 3: Timing settings (Endpointing + Utterance end)
+  const timingGrid = document.createElement('div');
+  timingGrid.className = 'form-grid form-grid--spaced';
+  root.append(timingGrid);
+
+  const endpointingField = makeField(timingGrid, 'Пауза фиксации', false, 'compact-input-row');
   const endpointing = document.createElement('input');
   endpointing.type = 'number';
   endpointing.min = '0';
@@ -132,9 +150,23 @@ export function mountDeepgramEditor(
   endpointingUnit.textContent = 'мс';
   endpointingField.field.append(endpointing, endpointingUnit);
 
-  // Row 3: Compact checkboxes
+  const utteranceEndField = makeField(timingGrid, 'Конец фразы', false, 'compact-input-row');
+  const utteranceEnd = document.createElement('input');
+  utteranceEnd.type = 'number';
+  utteranceEnd.min = '0';
+  utteranceEnd.max = '5000';
+  utteranceEnd.step = '100';
+  utteranceEnd.value = String(settings.utteranceEndMs);
+  utteranceEnd.title = '0 — выкл.; 1000–5000 мс, работает при включённом промежуточном тексте';
+  utteranceEnd.setAttribute('aria-label', 'Конец фразы (utterance_end_ms), мс');
+  const utteranceEndUnit = document.createElement('span');
+  utteranceEndUnit.className = 'unit-label';
+  utteranceEndUnit.textContent = 'мс';
+  utteranceEndField.field.append(utteranceEnd, utteranceEndUnit);
+
+  // Row 4: Compact checkboxes
   const checkboxRow = document.createElement('div');
-  checkboxRow.className = 'checkbox-row form-grid--spaced';
+  checkboxRow.className = 'checkbox-row checkbox-row--wrap form-grid--spaced';
   root.append(checkboxRow);
   const addCheckbox = (title: string, checked: boolean, change: (value: boolean) => void) => {
     const label = document.createElement('label');
@@ -145,16 +177,24 @@ export function mountDeepgramEditor(
     input.addEventListener('change', () => { change(input.checked); save(); updateStatus(); });
     label.append(input, ` ${title}`);
     checkboxRow.append(label);
+    return input;
   };
-  addCheckbox('Умное форматирование и пунктуация', settings.smartFormat, value => { settings.smartFormat = value; });
+  addCheckbox('Умное форматирование', settings.smartFormat, value => { settings.smartFormat = value; });
+  const punctuateCheckbox = addCheckbox('Пунктуация', settings.punctuate, value => { settings.punctuate = value; });
+  punctuateCheckbox.disabled = settings.smartFormat;
+  addCheckbox('Числа цифрами', settings.numerals, value => { settings.numerals = value; });
   addCheckbox('Промежуточный текст на лету', settings.interimResults, value => { settings.interimResults = value; });
   addCheckbox('Разделять говорящих', settings.diarize, value => { settings.diarize = value; });
+  addCheckbox('Слова-паразиты', settings.fillerWords, value => { settings.fillerWords = value; });
+  addCheckbox('Фильтр мата', settings.profanityFilter, value => { settings.profanityFilter = value; });
+  addCheckbox('Не обучать модели (MIP opt-out)', settings.mipOptOut, value => { settings.mipOptOut = value; });
 
-  // Row 4: Keyterms textarea
-  const keytermsGrid = document.createElement('div');
-  keytermsGrid.className = 'form-grid form-grid--spaced';
-  root.append(keytermsGrid);
-  const keytermsField = makeField(keytermsGrid, 'Ключевые термины');
+  // Row 5: Keyterms and Replace textareas
+  const textareasGrid = document.createElement('div');
+  textareasGrid.className = 'form-grid form-grid--spaced';
+  root.append(textareasGrid);
+
+  const keytermsField = makeField(textareasGrid, 'Ключевые термины');
   const keyterms = document.createElement('textarea');
   keyterms.className = 'prompt-input';
   keyterms.rows = 2;
@@ -162,6 +202,15 @@ export function mountDeepgramEditor(
   keyterms.value = settings.keyterms.join('\n');
   keyterms.setAttribute('aria-label', 'Ключевые термины');
   keytermsField.field.append(keyterms);
+
+  const replaceField = makeField(textareasGrid, 'Замены слов');
+  const replace = document.createElement('textarea');
+  replace.className = 'prompt-input';
+  replace.rows = 2;
+  replace.placeholder = 'что:на_что — по одной на строку...';
+  replace.value = settings.replace.join('\n');
+  replace.setAttribute('aria-label', 'Замены слов');
+  replaceField.field.append(replace);
 
   // Fallback footer controls for branch step settings (when host header controls are not passed)
   let localTest: HTMLButtonElement | undefined;
@@ -190,6 +239,7 @@ export function mountDeepgramEditor(
 
   const updateStatus = () => {
     if (editors.get(root)?.settings !== settings) return;
+    punctuateCheckbox.disabled = settings.smartFormat;
     const local = deepgramConfigurationError(settings);
     const unavailable = models && !models.some(m => m.id === settings.model)
       ? models.length ? 'Выбранная модель отсутствует в списке моделей Deepgram.' : 'API не вернул доступных моделей Deepgram.'
@@ -220,6 +270,7 @@ export function mountDeepgramEditor(
 
     keyField.field.classList.toggle('is-invalid', !settings.apiKey);
     modelField.field.classList.toggle('is-invalid', !settings.model || Boolean(unavailable));
+    replaceField.field.classList.toggle('is-invalid', settings.replace.some(rule => rule.indexOf(':') <= 0));
     updateModelInfo();
     onStatus?.(text, state, message);
   };
@@ -296,14 +347,26 @@ export function mountDeepgramEditor(
   });
   model.addEventListener('change', () => { settings.model = model.value; save(); updateStatus(); });
   language.addEventListener('change', () => { settings.language = language.value; save(); updateStatus(); });
+  redact.addEventListener('change', () => { settings.redact = redact.value as DeepgramRedact; save(); updateStatus(); });
   endpointing.addEventListener('input', () => {
     const parsed = Number(endpointing.value);
     settings.endpointingMs = endpointing.value.trim() && Number.isFinite(parsed) ? Math.round(parsed) : -1;
     save();
     updateStatus();
   });
+  utteranceEnd.addEventListener('input', () => {
+    const parsed = Number(utteranceEnd.value);
+    settings.utteranceEndMs = utteranceEnd.value.trim() && Number.isFinite(parsed) ? Math.round(parsed) : -1;
+    save();
+    updateStatus();
+  });
   keyterms.addEventListener('input', () => {
     settings.keyterms = keyterms.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
+    save();
+    updateStatus();
+  });
+  replace.addEventListener('input', () => {
+    settings.replace = replace.value.split(/\r?\n/).map(v => v.trim()).filter(Boolean);
     save();
     updateStatus();
   });

@@ -1625,6 +1625,16 @@ textarea:focus {
 .checkbox-row {
   display: flex;
   gap: 12px;
+
+  &--wrap {
+    flex-wrap: wrap;
+    gap: 6px 14px;
+
+    .checkbox-label {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+  }
 }
 
 .checkbox-label {

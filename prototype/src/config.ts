@@ -17,6 +17,7 @@ import {
   createDefaultScenario,
   createVoiceAnswerScenario,
   createClaudeCodeScenario,
+  createAntigravityCliScenario,
   createSelectedTextSpeechScenario,
   createStep,
   DEFAULT_CANCEL_HOTKEY,
@@ -127,7 +128,7 @@ export function normalizeSettings(value: unknown): AppSettings {
   const rawSteps = rawActiveScenario && Array.isArray(rawActiveScenario.steps)
     ? rawActiveScenario.steps.filter(isRecord)
     : [];
-  const rawTrigger = rawSteps.find(step => step.type === 'startRecording' || step.type === 'claudeCode' || step.type === 'selectedText');
+  const rawTrigger = rawSteps.find(step => step.type === 'startRecording' || step.type === 'claudeCode' || step.type === 'antigravityCli' || step.type === 'selectedText');
   const oldCancelHotkey = typeof source.hotkeyCancel === 'string'
     ? source.hotkeyCancel
     : typeof rawTrigger?.hotkeyCancel === 'string' ? rawTrigger.hotkeyCancel : defaults.hotkeyCancel;
@@ -276,6 +277,9 @@ export function normalizeSettings(value: unknown): AppSettings {
   if (!isAndroid && storedScenarioVersion < 18 && !scenarios.some(scenario => scenario.id === 'claude-code-test')) {
     scenarios.push(createClaudeCodeScenario());
   }
+  if (!isAndroid && storedScenarioVersion < 26 && !scenarios.some(scenario => scenario.id === 'antigravity-cli-test')) {
+    scenarios.push(createAntigravityCliScenario());
+  }
   if (!isAndroid && storedScenarioVersion < 21 && !scenarios.some(scenario => scenario.id === 'selected-text-speech-scenario')) {
     scenarios.push(createSelectedTextSpeechScenario());
   }
@@ -393,7 +397,7 @@ export function normalizeSettings(value: unknown): AppSettings {
     scenarios,
     activeScenarioId,
     androidScenarioId,
-    scenarioVersion: 25,
+    scenarioVersion: 26,
   };
 }
 
@@ -436,10 +440,10 @@ export function defaultSettings(): AppSettings {
     autoCopyClipboard: true,
     autoPasteActiveWindow: true,
     historyMaxItems: 10,
-    scenarios: [scenario, createVoiceAnswerScenario(), ...(!isAndroid ? [createSelectedTextSpeechScenario(), createClaudeCodeScenario()] : [])],
+    scenarios: [scenario, createVoiceAnswerScenario(), ...(!isAndroid ? [createSelectedTextSpeechScenario(), createClaudeCodeScenario(), createAntigravityCliScenario()] : [])],
     activeScenarioId: scenario.id,
     androidScenarioId: scenario.id,
-    scenarioVersion: 25,
+    scenarioVersion: 26,
   };
 }
 

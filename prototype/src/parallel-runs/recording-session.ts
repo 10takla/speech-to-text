@@ -158,7 +158,26 @@ export function createRecordingSession(host: SessionHost) {
   let mediaRecorder: MediaRecorder | null = null;
   let recordedChunks: Blob[] = [];
   let nativeRecording = false;
-  const usesClaude = () => config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0]?.type === 'claudeCode';
+  const cliSource = (): 'claudeCode' | 'antigravityCli' | null => {
+    const type = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0]?.type;
+    return type === 'claudeCode' || type === 'antigravityCli' ? type : null;
+  };
+  const cliCommands = (kind: 'claudeCode' | 'antigravityCli') => kind === 'claudeCode'
+    ? {
+        label: 'Claude Code',
+        start: 'start_claude_dictation' as const,
+        poll: 'poll_claude_dictation' as const,
+        stop: 'stop_claude_dictation' as const,
+        cancel: 'cancel_claude_code' as const,
+      }
+    : {
+        label: 'Antigravity CLI',
+        start: 'start_antigravity_dictation' as const,
+        poll: 'poll_antigravity_dictation' as const,
+        stop: 'stop_antigravity_dictation' as const,
+        cancel: 'cancel_antigravity_cli' as const,
+      };
+  const usesClaude = () => cliSource() !== null;
   const claudeLivePreviewEnabled = () => {
     const trigger = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0];
     // Display flags are reactive; the recording's other settings remain a snapshot.
@@ -167,6 +186,7 @@ export function createRecordingSession(host: SessionHost) {
   // The scenario starts from the text selected in another application, without recording.
   const usesSelection = () => config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0]?.type === 'selectedText';
   let claudeRecording = false;
+  let activeCliKind: 'claudeCode' | 'antigravityCli' | null = null;
   let claudePoll: ReturnType<typeof setTimeout> | undefined;
   // Claude Code records the voice itself. A parallel capture of the default
   // microphone drives the level indicator and keeps the audio for history.
@@ -724,19 +744,22 @@ export function createRecordingSession(host: SessionHost) {
         });
         return;
       }
-      if (usesClaude()) {
-        if (!invoke || isAndroid) throw new Error('Диктовка Claude Code доступна в приложении Windows.');
+      const cliKind = cliSource();
+      if (cliKind) {
+        const commands = cliCommands(cliKind);
+        if (!invoke || isAndroid) throw new Error(`Диктовка ${commands.label} доступна в приложении Windows.`);
         setOverlayState('recording');
-        statusText.textContent = 'Подготовка Claude Code…';
+        statusText.textContent = `Подготовка ${commands.label}…`;
         const capture = startClaudeCapture();
-        try { await invokeCommand(invoke, 'start_claude_dictation', { runId: host.runId }); }
+        try { await invokeCommand(invoke, commands.start, { runId: host.runId }); }
         catch (error) { await releaseClaudeCapture(capture); throw error; }
         if (generation !== recordingGeneration) {
           await releaseClaudeCapture(capture);
-          await invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId });
+          await invokeCommand(invoke, commands.cancel, { runId: host.runId });
           return;
         }
         claudeRecording = true;
+        activeCliKind = cliKind;
         startingRecording = false;
         setOverlayState('recording');
         void capture.then(started => {
@@ -749,9 +772,9 @@ export function createRecordingSession(host: SessionHost) {
           claudePoll = undefined;
           if (!claudeRecording || state !== 'recording' || !invoke || generation !== recordingGeneration) return;
           const live = claudeLivePreviewEnabled();
-          void invokeCommand(invoke, 'poll_claude_dictation', { runId: host.runId, live, known: live ? lastPreviewText : null }).then(({ finished, text }) => {
+          void invokeCommand(invoke, commands.poll, { runId: host.runId, live, known: live ? lastPreviewText : null }).then(({ finished, text }) => {
             if (generation !== recordingGeneration || state !== 'recording') return;
-            // Claude's interim transcript; the final text still arrives through its hook.
+            // Interim transcript; the final text arrives on stop.
             if (claudeLivePreviewEnabled() && text !== null && text !== lastPreviewText) setLivePreviewText(text);
             if (finished) { void finishRecording(); return; }
             if (claudeRecording) claudePoll = setTimeout(pollClaude, CLAUDE_POLL_GAP_MS);
@@ -759,7 +782,8 @@ export function createRecordingSession(host: SessionHost) {
             if (generation !== recordingGeneration) return;
             stopClaudePolling();
             claudeRecording = false;
-            void invokeCommand(invoke!, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
+            activeCliKind = null;
+            void invokeCommand(invoke!, commands.cancel, { runId: host.runId }).catch(console.warn);
             void recordClaudeFailure(generation, error);
           });
         };
@@ -817,7 +841,8 @@ export function createRecordingSession(host: SessionHost) {
       startingRecording = false;
       stopVolumeAnalysis();
       if (invoke) {
-        if (usesClaude()) await invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId }).catch(() => {});
+        const cliKind = activeCliKind ?? cliSource();
+        if (cliKind) await invokeCommand(invoke, cliCommands(cliKind).cancel, { runId: host.runId }).catch(() => {});
         else await getAudioCapture().cancel().catch(() => {});
       }
       console.error('Ошибка доступа к микрофону:', err);
@@ -942,41 +967,44 @@ export function createRecordingSession(host: SessionHost) {
   async function finishRecording() {
     if (state !== 'recording' || pausePending || startingRecording) return;
     if (claudeRecording && invoke) {
+      const cliKind = activeCliKind ?? cliSource() ?? 'claudeCode';
+      const commands = cliCommands(cliKind);
       const stopRequestedAtMs = Date.now();
       const claudeStep = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0];
       const afterStopMs = normalizeAfterStopMs(claudeStep?.afterStopMs);
       const firstWordWaitMs = normalizeFirstWordWaitMs(claudeStep?.firstWordWaitMs);
       const captured = stopClaudePolling(true);
       claudeRecording = false;
+      activeCliKind = null;
       const generation = recordingGeneration;
       const controller = new AbortController();
       workflowAbortController = controller;
       setOverlayState('transcribing');
-      // The parallel capture ends on the same boundary as Claude and is kept for
+      // The parallel capture ends on the same boundary as the CLI and is kept for
       // history; without it the run still succeeds with the text alone.
       const audio = captured
         ? getAudioCapture().stop(stopRequestedAtMs, afterStopMs, controller.signal)
           .then(bytes => new Blob([bytes], { type: 'audio/wav' }))
-          .catch(error => { console.warn('Не удалось сохранить аудио записи Claude Code:', error); return new Blob(); })
+          .catch(error => { console.warn(`Не удалось сохранить аудио записи ${commands.label}:`, error); return new Blob(); })
         : new Promise<Blob>(resolve => window.setTimeout(() => resolve(new Blob()), afterStopMs));
       // The next recording may start once the microphone is free: it records in
-      // the spare Claude console while this one finishes the phrase.
+      // the spare console while this one finishes the phrase.
       void audio.then(() => host.onRecordingReleased());
       try {
-        // Claude Code keeps recording for the tail so the last words are not cut off.
+        // Keep recording for the tail so the last words are not cut off.
         // The native side waits it out, doing its checks meanwhile.
         const tail = Math.max(0, stopRequestedAtMs + afterStopMs - Date.now());
         // A failed stop (nothing recognised, no text in time) still goes through the
         // workflow, so the run and its error are recorded in history.
-        const spoken = await invokeCommand(invoke, 'stop_claude_dictation', { runId: host.runId, afterStopMs: tail, firstWordWaitMs })
+        const spoken = await invokeCommand(invoke, commands.stop, { runId: host.runId, afterStopMs: tail, firstWordWaitMs })
           .then(text => ({ text, error: undefined }), error => ({ text: '', error: errorMessage(error) }));
-        if (spoken.error !== undefined) await invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
+        if (spoken.error !== undefined) await invokeCommand(invoke, commands.cancel, { runId: host.runId }).catch(console.warn);
         const audioBlob = await audio;
         host.onRecordingReleased();
         if (generation !== recordingGeneration || controller.signal.aborted) return;
         await processRecordedAudio(audioBlob, generation, controller.signal, spoken.text, spoken.error);
       } catch (error) {
-        await invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
+        await invokeCommand(invoke, commands.cancel, { runId: host.runId }).catch(console.warn);
         host.onRecordingReleased();
         if (generation === recordingGeneration && !controller.signal.aborted) setOverlayState('error', errorMessage(error));
       }
@@ -1057,15 +1085,17 @@ export function createRecordingSession(host: SessionHost) {
 
     const wasActive = state !== 'idle' || startingRecording;
     stopClaudePolling();
-    if (usesClaude() && invoke) {
+    const cliKind = activeCliKind ?? cliSource();
+    if (cliKind && invoke) {
       claudeRecording = false;
+      activeCliKind = null;
       // Invalidate callbacks of a native startup or stop still in progress.
       recordingGeneration++;
       workflowAbortController?.abort();
-      // Not awaited: a hung Claude Code must not keep the overlay open. The
+      // Not awaited: a hung CLI must not keep the overlay open. The
       // native side stops a startup in progress by itself; a startup that
       // finishes anyway sees the new generation and cancels again.
-      void invokeCommand(invoke, 'cancel_claude_code', { runId: host.runId }).catch(console.warn);
+      void invokeCommand(invoke, cliCommands(cliKind).cancel, { runId: host.runId }).catch(console.warn);
     }
     recordingGeneration++;
     startingRecording = false;
