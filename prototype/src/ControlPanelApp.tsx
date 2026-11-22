@@ -98,6 +98,7 @@ export default function ControlPanelApp() {
                 <option value="groq">Groq (Whisper Cloud API)</option>
                 <option value="google-cloud">Google Cloud</option>
                 <option value="gemini">Google Gemini (AI Studio)</option>
+                <option value="deepgram">Deepgram (Live WebSocket)</option>
               </select>
             </div>
             <div className="form-field form-field--important" id="groq-api-key-field">
@@ -143,6 +144,7 @@ export default function ControlPanelApp() {
           </div>
           <div id="provider-specific-google-cloud" className="provider-specific-block" hidden />
           <div id="provider-specific-gemini-transcription" className="provider-specific-block" hidden />
+          <div id="provider-specific-deepgram" className="provider-specific-block" hidden />
           <div className="scenario-live-settings">
             <div className="scenario-live-settings-header">
               <h3 className="scenario-subheading">Распознавание в реальном времени</h3>

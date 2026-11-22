@@ -8,6 +8,8 @@ import { transcribeWithGoogleCloud } from './google-cloud/transcribe';
 import { googleCloudConfigurationError, type GoogleCloudSettings } from './google-cloud/settings';
 import { transcribeWithGemini } from './gemini-transcription/transcribe';
 import { geminiTranscriptionConfigurationError, type GeminiTranscriptionSettings } from './gemini-transcription/settings';
+import { transcribeWithDeepgram } from './deepgram/transcribe';
+import { deepgramConfigurationError, type DeepgramSettings } from './deepgram/settings';
 
 export function historyRecordingAudio(record: HistoryItem): Blob | undefined {
   return record.audioBlob?.size ? record.audioBlob : record.originalAudioBlob?.size ? record.originalAudioBlob : undefined;
@@ -19,12 +21,13 @@ export async function copyHistoryText(text: string): Promise<void> {
   else await navigator.clipboard.writeText(text);
 }
 
-type TranscriptionSettings = Pick<AppSettings, 'provider' | 'groqApiKey' | 'groqModel' | 'groqPrompt' | 'groqTemperature' | 'groqLanguage' | 'googleCloud' | 'geminiTranscription'>;
+type TranscriptionSettings = Pick<AppSettings, 'provider' | 'groqApiKey' | 'groqModel' | 'groqPrompt' | 'groqTemperature' | 'groqLanguage' | 'googleCloud' | 'geminiTranscription' | 'deepgram'>;
 interface RetranscriptionDependencies {
   settings(): TranscriptionSettings;
   transcribe(audio: Blob, options: GroqTranscriptionOptions, signal?: AbortSignal): Promise<TimedTranscript>;
   transcribeGoogleCloud?(audio: Blob, options?: GoogleCloudSettings, signal?: AbortSignal): Promise<TimedTranscript>;
   transcribeGemini?(audio: Blob, options?: GeminiTranscriptionSettings, signal?: AbortSignal): Promise<TimedTranscript>;
+  transcribeDeepgram?(audio: Blob, options?: DeepgramSettings, signal?: AbortSignal): Promise<TimedTranscript>;
   copy(text: string): Promise<void>;
 }
 
@@ -41,11 +44,15 @@ export async function retranscribeHistoryRecording(record: HistoryItem, signal?:
   } else if (settings.provider === 'gemini') {
     const error = geminiTranscriptionConfigurationError(settings.geminiTranscription);
     if (error) throw new Error(error);
+  } else if (settings.provider === 'deepgram') {
+    const error = deepgramConfigurationError(settings.deepgram);
+    if (error) throw new Error(error);
   } else if (!settings.groqApiKey.trim()) throw new Error('Укажите API-ключ транскрибации в настройках.');
   signal?.throwIfAborted();
   const result = settings.provider === 'google-cloud'
     ? await (dependencies.transcribeGoogleCloud ?? transcribeWithGoogleCloud)(audio, settings.googleCloud, signal)
     : settings.provider === 'gemini' ? await (dependencies.transcribeGemini ?? transcribeWithGemini)(audio, settings.geminiTranscription, signal)
+    : settings.provider === 'deepgram' ? await (dependencies.transcribeDeepgram ?? transcribeWithDeepgram)(audio, settings.deepgram, signal)
     : await dependencies.transcribe(audio, {
     apiKey: settings.groqApiKey.trim(), model: settings.groqModel, prompt: settings.groqPrompt,
     temperature: settings.groqTemperature, language: settings.groqLanguage,

@@ -28,6 +28,8 @@ type CommandContract = {
   get_audio_input_level: { args: undefined; result: number };
   stop_audio_recording: { args: { requestedAtMs: number; afterStopMs: number } | undefined; result: ArrayBuffer };
   snapshot_audio_recording: { args: undefined; result: ArrayBuffer };
+  read_audio_pcm_recording: { args: { fromFrame: number }; result: ArrayBuffer };
+  deepgram_http: { args: { method: 'GET' | 'POST'; path: string; apiKey: string; contentType?: string; bodyBase64?: string }; result: { status: number; body: string } };
   cancel_audio_recording: { args: undefined; result: void };
   pause_audio_recording: { args: undefined; result: void };
   resume_audio_recording: { args: undefined; result: void };

@@ -20,6 +20,8 @@ mod speech;
 mod speech_media;
 pub use speech_media::{set_speech_media_state, SpeechMediaState};
 mod piper;
+mod deepgram;
+pub use deepgram::deepgram_http;
 mod edge_speech;
 pub use edge_speech::{edge_speech_voices, edge_speech_stream, edge_speech_prepare, cancel_edge_speech};
 pub use piper::piper_http;
@@ -28,7 +30,7 @@ mod window;
 pub(crate) mod overlay_interaction;
 pub use overlay_interaction::set_overlay_pinned;
 
-pub use audio::{cancel_audio_recording, list_microphones, check_microphone, get_audio_input_level, pause_audio_recording, resume_audio_recording, snapshot_audio_recording, start_audio_recording, stop_audio_recording};
+pub use audio::{cancel_audio_recording, list_microphones, check_microphone, get_audio_input_level, pause_audio_recording, read_audio_pcm_recording, resume_audio_recording, snapshot_audio_recording, start_audio_recording, stop_audio_recording};
 pub use clipboard::{copy_text_to_clipboard, paste_text_into_active_window, write_clipboard_text};
 pub use hotkeys::{set_control_hotkeys_active, set_control_hotkeys, set_record_hotkey, set_scenario_hotkeys};
 pub use logs::get_app_logs;

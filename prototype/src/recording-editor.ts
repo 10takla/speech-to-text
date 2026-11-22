@@ -422,13 +422,13 @@ export function appendRecordingFragments(
   buffer: AudioBuffer,
   fragments: RecordingFragment[],
   offset: number,
-  live?: { segments: readonly TranscriptSegment[]; throughSeconds: number },
+  live?: { segments: readonly TranscriptSegment[]; throughSeconds: number; finalized?: boolean },
   cut = cutAudio,
 ): number {
   const liveEnd = Math.min(buffer.duration, live?.throughSeconds ?? 0);
   const segments = live?.segments.filter(segment => segment.start >= offset
     && segment.end <= liveEnd && segment.end > segment.start) ?? [];
-  if (liveEnd > offset && segments.length) {
+  if (liveEnd > offset && (segments.length || (live?.finalized && liveEnd >= buffer.duration - .01))) {
     fragments.push({
       audioBlob: cut(buffer, [{ start: offset, end: liveEnd }]),
       start: offset, end: liveEnd, removedRanges: [],

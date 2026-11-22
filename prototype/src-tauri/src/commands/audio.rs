@@ -55,6 +55,14 @@ pub fn snapshot_audio_recording(
 }
 
 #[tauri::command]
+pub fn read_audio_pcm_recording(
+    state: tauri::State<'_, audio_capture::AudioCaptureState>,
+    from_frame: usize,
+) -> Result<tauri::ipc::Response, String> {
+    state.read_pcm(from_frame).map(tauri::ipc::Response::new)
+}
+
+#[tauri::command]
 pub async fn stop_audio_recording(
     state: tauri::State<'_, audio_capture::AudioCaptureState>,
     requested_at_ms: Option<f64>,

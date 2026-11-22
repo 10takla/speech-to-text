@@ -16,11 +16,19 @@ export interface HistoryRepository {
   list(limit: number): Promise<HistoryItem[]>;
 }
 
+export interface PcmChunk {
+  sampleRate: number;
+  totalFrames: number;
+  paused: boolean;
+  pcm: ArrayBuffer;
+}
+
 export interface AudioCapturePort {
   start(microphoneId?: string): Promise<void>;
   pause(): Promise<void>;
   resume(): Promise<void>;
   snapshot(): Promise<ArrayBuffer>;
+  readPcm?(fromFrame: number): Promise<PcmChunk>;
   stop(requestedAtMs?: number, afterStopMs?: number, signal?: AbortSignal): Promise<ArrayBuffer>;
   cancel(): Promise<void>;
   inputLevel(): Promise<number>;

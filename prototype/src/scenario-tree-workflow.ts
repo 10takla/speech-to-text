@@ -81,6 +81,7 @@ export async function runScenarioTree(audio: Blob, scenario: Scenario, dependenc
         provider: step.transcription?.provider ?? dependencies.getSettings().provider,
         googleCloud: step.transcription?.googleCloud ?? dependencies.getSettings().googleCloud,
         geminiTranscription: step.transcription?.geminiTranscription ?? dependencies.getSettings().geminiTranscription,
+        deepgram: step.transcription?.deepgram ?? dependencies.getSettings().deepgram,
         groqApiKey: step.transcription?.apiKey ?? dependencies.getSettings().groqApiKey,
       }),
       fragments,

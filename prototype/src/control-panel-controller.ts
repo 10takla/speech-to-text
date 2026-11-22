@@ -15,6 +15,8 @@ import { mountGoogleCloudEditor } from './google-cloud/editor';
 import { normalizeGoogleCloudSettings } from './google-cloud/settings';
 import { mountGeminiTranscriptionEditor } from './gemini-transcription/editor';
 import { normalizeGeminiTranscriptionSettings } from './gemini-transcription/settings';
+import { disposeDeepgramEditor, mountDeepgramEditor } from './deepgram/editor';
+import { normalizeDeepgramSettings } from './deepgram/settings';
 import { getRecentLogs, initLoggerForwarding } from './logger';
 
 initLoggerForwarding('control-panel');
@@ -204,7 +206,7 @@ function autoFitInputWidth(input: HTMLInputElement, minChars = 1) {
 }
 
 toggleLiveTranscription.checked = settings.liveTranscriptionEnabled;
-liveTranscriptionParameters.hidden = !toggleLiveTranscription.checked;
+liveTranscriptionParameters.hidden = !toggleLiveTranscription.checked || settings.provider === 'deepgram';
 liveSilenceDuration.value = String(settings.liveSilenceDurationMs);
 liveMaxChunkDuration.value = String(settings.liveMaxChunkDurationSeconds);
 liveChunkOverlap.value = String(settings.liveChunkOverlapSeconds);
@@ -491,6 +493,7 @@ const refreshScenarioEditor = scenarioEditorRoot
         settings.provider = transcription.provider;
         settings.googleCloud = transcription.googleCloud;
         settings.geminiTranscription = transcription.geminiTranscription;
+        settings.deepgram = transcription.deepgram;
         settings.groqApiKey = transcription.apiKey;
         settings.groqModel = transcription.model;
         settings.groqPrompt = transcription.prompt;
@@ -508,7 +511,7 @@ const refreshScenarioEditor = scenarioEditorRoot
         if (groqTemperature) groqTemperature.value = String(settings.groqTemperature);
         setGroqLanguage(settings.groqLanguage);
         toggleLiveTranscription.checked = settings.liveTranscriptionEnabled;
-        liveTranscriptionParameters.hidden = !toggleLiveTranscription.checked;
+        liveTranscriptionParameters.hidden = !toggleLiveTranscription.checked || settings.provider === 'deepgram';
         liveSilenceDuration.value = String(settings.liveSilenceDurationMs);
         liveMaxChunkDuration.value = String(settings.liveMaxChunkDurationSeconds);
         liveChunkOverlap.value = String(settings.liveChunkOverlapSeconds);
@@ -622,7 +625,10 @@ function updateAndSave() {
   settings.groqModel = modelSelect.value;
   settings.groqApiKey = apiKeyInput.value.trim();
   settings.liveTranscriptionEnabled = toggleLiveTranscription.checked;
-  liveTranscriptionParameters.hidden = !toggleLiveTranscription.checked;
+  if (providerSelect) {
+    settings.provider = selectValue(providerSelect.value, ['groq', 'google-cloud', 'gemini', 'deepgram', 'none'], settings.provider);
+  }
+  liveTranscriptionParameters.hidden = !toggleLiveTranscription.checked || settings.provider === 'deepgram';
   settings.liveSilenceDurationMs = Math.max(300, Math.min(2000, Number(liveSilenceDuration.value) || 700));
   settings.liveMaxChunkDurationSeconds = Math.max(3, Math.min(20, Number(liveMaxChunkDuration.value) || 9));
   settings.liveChunkOverlapSeconds = Math.max(0, Math.min(2, Number(liveChunkOverlap.value) || 0));
@@ -632,9 +638,6 @@ function updateAndSave() {
   if (groqTemperature) settings.groqTemperature = parseFloat(groqTemperature.value) || 0.0;
   if (groqPrompt) settings.groqPrompt = groqPrompt.value;
 
-  if (providerSelect) {
-    settings.provider = selectValue(providerSelect.value, ['groq', 'google-cloud', 'gemini', 'none'], settings.provider);
-  }
   const activeScenario = settings.scenarios.find(scenario => scenario.id === settings.activeScenarioId);
   settings.postProcessEnabled = activeScenario?.steps.some(step => step.enabled && step.type === 'postprocess') ?? false;
   const trigger = activeScenario?.steps.find(step => isTriggerStep(step));
@@ -654,6 +657,7 @@ function updateAndSave() {
       provider: settings.provider,
       googleCloud: settings.googleCloud,
       geminiTranscription: settings.geminiTranscription,
+      deepgram: settings.deepgram,
       apiKey: settings.groqApiKey,
       model: settings.groqModel,
       prompt: settings.groqPrompt,
@@ -760,7 +764,10 @@ function updateProviderReadiness() {
 
   for (const provider of ['groq', 'gemini'] as const) {
     const result = document.getElementById(`${provider}-check-result`);
-    if (provider === 'groq' && sttSelected !== 'groq') { if (result) result.textContent = ''; continue; }
+    if (provider === 'groq' && sttSelected !== 'groq') {
+      if (result && sttSelected !== 'deepgram') result.textContent = '';
+      continue;
+    }
     const pill = provider === 'groq' ? sttStatus : postStatus;
     const check = providerChecks.get(provider);
     if (check && check.fingerprint !== providerFingerprint(provider)) providerChecks.delete(provider);
@@ -828,8 +835,34 @@ function updateProviderBlocksVisibility() {
       });
     }
   }
-  const groqTest = document.getElementById('check-groq-settings');
-  if (groqTest) groqTest.hidden = providerSelect.value !== 'groq';
+  const groqTest = document.getElementById('check-groq-settings') as HTMLButtonElement | null;
+  const deepgramRoot = document.getElementById('provider-specific-deepgram');
+  const isDeepgram = providerSelect.value === 'deepgram';
+  if (deepgramRoot) {
+    deepgramRoot.hidden = !isDeepgram;
+    if (isDeepgram) {
+      const step = settings.scenarios.find(s => s.id === settings.activeScenarioId)?.steps.find(s => s.type === 'transcribe');
+      const options = step?.transcription?.deepgram ?? settings.deepgram ?? normalizeDeepgramSettings();
+      settings.deepgram = options;
+      if (step?.transcription) step.transcription.deepgram = options;
+      mountDeepgramEditor(deepgramRoot, options, updateAndSave, (text, state, details) => {
+        if (providerSelect.value !== 'deepgram') return;
+        const pill = document.getElementById('stt-provider-status');
+        if (pill) { pill.textContent = text; pill.className = `status-pill status-pill--${state}`; pill.title = details; }
+      }, {
+        testButton: groqTest ?? undefined,
+        checkResult: document.getElementById('groq-check-result') ?? undefined,
+      });
+    } else {
+      disposeDeepgramEditor(deepgramRoot);
+    }
+  }
+  const liveBlock = toggleLiveTranscription.closest<HTMLElement>('.scenario-live-settings');
+  if (liveBlock) liveBlock.hidden = isDeepgram;
+  const finalSetting = providerSelect.closest('.scenario-step-settings')?.querySelector<HTMLElement>('[data-final-transcription-setting]');
+  if (finalSetting) finalSetting.hidden = isDeepgram;
+  liveTranscriptionParameters.hidden = !toggleLiveTranscription.checked || isDeepgram;
+  if (groqTest) groqTest.hidden = providerSelect.value !== 'groq' && providerSelect.value !== 'deepgram';
   const groqBlock = document.getElementById('provider-specific-groq');
   const groqApiKeyField = document.getElementById('groq-api-key-field');
   const isGroq = providerSelect?.value === 'groq';
@@ -889,7 +922,9 @@ void (async () => {
 });
 
 refreshGroqModelsButton.addEventListener('click', () => { void refreshModelList('groq'); });
-document.getElementById('check-groq-settings')?.addEventListener('click', () => { void checkProviderSettings('groq'); });
+document.getElementById('check-groq-settings')?.addEventListener('click', () => {
+  if (providerSelect.value === 'groq') void checkProviderSettings('groq');
+});
 document.getElementById('check-gemini-settings')?.addEventListener('click', () => { void checkProviderSettings('gemini'); });
 [groqTemperature, groqLanguage].filter(Boolean).forEach(field => {
   field.addEventListener('input', updateProviderReadiness);
@@ -1025,7 +1060,7 @@ function applyConfiguration(next: typeof settings) {
     if (groqTemperature) groqTemperature.value = String(settings.groqTemperature ?? 0.0);
     if (groqPrompt) groqPrompt.value = settings.groqPrompt || '';
     toggleLiveTranscription.checked = settings.liveTranscriptionEnabled;
-    liveTranscriptionParameters.hidden = !toggleLiveTranscription.checked;
+    liveTranscriptionParameters.hidden = !toggleLiveTranscription.checked || settings.provider === 'deepgram';
     liveSilenceDuration.value = String(settings.liveSilenceDurationMs ?? 700);
     liveMaxChunkDuration.value = String(settings.liveMaxChunkDurationSeconds ?? 9);
     liveChunkOverlap.value = String(settings.liveChunkOverlapSeconds ?? 0.5);

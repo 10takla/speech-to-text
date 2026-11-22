@@ -26,6 +26,9 @@ function significantSettings(step: ScenarioStep, defaults: ScenarioStepSettingsD
       live: s.liveTranscriptionEnabled, final: s.retranscribeFullRecording === true,
       chunks: s.liveTranscriptionEnabled ? [s.liveSilenceDurationMs, s.liveMaxChunkDurationSeconds, s.liveChunkOverlapSeconds] : undefined,
     };
+    if (s.provider === 'deepgram') return {
+      provider: s.provider, deepgram: s.deepgram ? { ...s.deepgram, apiKey: undefined } : undefined,
+    };
     return s.provider === 'none' ? { provider: s.provider } : {
       provider: s.provider, model: s.model.trim(), language: s.language, prompt: s.prompt.trim(),
       temperature: s.temperature, responseFormat: s.responseFormat, live: s.liveTranscriptionEnabled,

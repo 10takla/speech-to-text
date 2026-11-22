@@ -25,6 +25,17 @@ export function createTauriAudioCapture(invoke: typeof TauriInvoke): AudioCaptur
     pause: () => invokeCommand(invoke, 'pause_audio_recording'),
     resume: () => invokeCommand(invoke, 'resume_audio_recording'),
     snapshot: () => invokeCommand(invoke, 'snapshot_audio_recording'),
+    readPcm: async fromFrame => {
+      const raw = await invokeCommand(invoke, 'read_audio_pcm_recording', { fromFrame });
+      if (raw.byteLength < 12) throw new Error('Некорректный формат аудиобуфера.');
+      const view = new DataView(raw);
+      return {
+        sampleRate: view.getUint32(0, true),
+        totalFrames: view.getUint32(4, true),
+        paused: (view.getUint32(8, true) & 1) !== 0,
+        pcm: raw.slice(12),
+      };
+    },
     stop: (requestedAtMs = Date.now(), afterStopMs, signal) => {
       const stopping = invokeCommand(invoke, 'stop_audio_recording', {
         requestedAtMs, afterStopMs: normalizeAfterStopMs(afterStopMs),

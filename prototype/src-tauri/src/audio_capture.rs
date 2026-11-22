@@ -38,6 +38,45 @@ impl CaptureSession {
         let samples: Vec<f32> = self.chunks.iter().flat_map(|chunk| chunk.samples.iter().copied()).collect();
         samples_to_wav(&samples, self.channels, self.sample_rate)
     }
+
+    fn pcm_from(&self, from_frame: usize) -> Result<Vec<u8>, String> {
+        if let Some(error) = &self.error { return Err(error.clone()); }
+        pcm_slice_from_chunks(&self.chunks, self.channels, self.sample_rate, self.paused, from_frame)
+    }
+}
+
+fn pcm_slice_from_chunks(
+    chunks: &[AudioChunk],
+    channels: u16,
+    sample_rate: u32,
+    paused: bool,
+    from_frame: usize,
+) -> Result<Vec<u8>, String> {
+    let ch = channels.max(1) as usize;
+    let total_frames: usize = chunks.iter().map(|chunk| chunk.samples.len() / ch).sum();
+    let start_frame = from_frame.min(total_frames);
+    let new_frames = total_frames.saturating_sub(start_frame);
+    let mut out = Vec::with_capacity(12 + new_frames * 2);
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(total_frames as u32).to_le_bytes());
+    out.extend_from_slice(&(u32::from(paused)).to_le_bytes());
+    if new_frames == 0 {
+        return Ok(out);
+    }
+    let mut skip = start_frame;
+    for chunk in chunks {
+        let chunk_frames = chunk.samples.len() / ch;
+        if skip >= chunk_frames {
+            skip -= chunk_frames;
+            continue;
+        }
+        let slice = &chunk.samples[skip * ch..chunk_frames * ch];
+        skip = 0;
+        for frame in slice.chunks_exact(ch) {
+            out.extend_from_slice(&frame_to_mono_i16(frame).to_le_bytes());
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Clone)]
@@ -60,6 +99,7 @@ enum AudioCommand {
     Start(Option<String>, bool, Sender<Result<(), String>>),
     Pause(Instant, Sender<Result<(), String>>),
     Snapshot(Sender<Result<Vec<u8>, String>>),
+    ReadPcm(usize, Sender<Result<Vec<u8>, String>>),
     Resume(Sender<Result<(), String>>),
     Stop(Instant, Sender<Result<Vec<u8>, String>>),
     Cancel,
@@ -99,6 +139,13 @@ impl AudioCaptureState {
         self.touch();
         let (reply, response) = mpsc::channel();
         self.sender.send(AudioCommand::Snapshot(reply)).map_err(|e| e.to_string())?;
+        response.recv().map_err(|e| e.to_string())?
+    }
+
+    pub fn read_pcm(&self, from_frame: usize) -> Result<Vec<u8>, String> {
+        self.touch();
+        let (reply, response) = mpsc::channel();
+        self.sender.send(AudioCommand::ReadPcm(from_frame, reply)).map_err(|e| e.to_string())?;
         response.recv().map_err(|e| e.to_string())?
     }
 
@@ -204,6 +251,13 @@ fn audio_worker(
             AudioCommand::Snapshot(reply) => {
                 let result = match active.as_ref() {
                     Some(session) => session.wav(),
+                    None => Err("Запись не запущена.".into()),
+                };
+                let _ = reply.send(result);
+            }
+            AudioCommand::ReadPcm(from_frame, reply) => {
+                let result = match active.as_ref() {
+                    Some(session) => session.pcm_from(from_frame),
                     None => Err("Запись не запущена.".into()),
                 };
                 let _ = reply.send(result);
@@ -465,6 +519,17 @@ fn report_stream_error(error: cpal::Error, sender: &Sender<AudioCommand>) {
     let _ = sender.send(AudioCommand::Failed(error.to_string()));
 }
 
+fn frame_to_mono_i16(frame: &[f32]) -> i16 {
+    let sum: f32 = frame.iter().copied().sum();
+    let mono_sample = sum / frame.len().max(1) as f32;
+    let clamped = mono_sample.clamp(-1.0, 1.0);
+    if clamped < 0.0 {
+        (clamped * 32768.0) as i16
+    } else {
+        (clamped * 32767.0) as i16
+    }
+}
+
 fn samples_to_wav(
     samples: &[f32],
     channels: u16,
@@ -487,15 +552,7 @@ fn samples_to_wav(
         let mut writer = WavWriter::new(&mut cursor, spec).map_err(|e| e.to_string())?;
         // Усредняем чередующиеся каналы (interleaved frames) в один моно-сэмпл
         for frame in samples.chunks(ch) {
-            let sum: f32 = frame.iter().copied().sum();
-            let mono_sample = sum / frame.len() as f32;
-            let clamped = mono_sample.clamp(-1.0, 1.0);
-            let pcm = if clamped < 0.0 {
-                (clamped * 32768.0) as i16
-            } else {
-                (clamped * 32767.0) as i16
-            };
-            writer.write_sample(pcm).map_err(|e| e.to_string())?;
+            writer.write_sample(frame_to_mono_i16(frame)).map_err(|e| e.to_string())?;
         }
         writer.finalize().map_err(|e| e.to_string())?;
     }
@@ -620,5 +677,44 @@ mod tests {
     fn rejects_empty_captures() {
         let samples = Vec::new();
         assert!(samples_to_wav(&samples, 1, 16_000).is_err());
+    }
+
+    #[test]
+    fn reads_incremental_mono_pcm_header_and_matches_wav_samples() {
+        let chunks = vec![
+            chunk(0, &[1.0, -1.0, 0.5, 0.5]),
+            chunk(10, &[-0.5, -0.5, 0.25, -0.25]),
+        ];
+        let full = pcm_slice_from_chunks(&chunks, 2, 48_000, false, 0).unwrap();
+        assert_eq!(u32::from_le_bytes(full[0..4].try_into().unwrap()), 48_000);
+        assert_eq!(u32::from_le_bytes(full[4..8].try_into().unwrap()), 4);
+        assert_eq!(u32::from_le_bytes(full[8..12].try_into().unwrap()), 0);
+        let samples: Vec<i16> = full[12..]
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+
+        let all_f32: Vec<f32> = chunks.iter().flat_map(|c| c.samples.iter().copied()).collect();
+        let wav = samples_to_wav(&all_f32, 2, 48_000).unwrap();
+        let wav_samples: Vec<i16> = hound::WavReader::new(std::io::Cursor::new(wav))
+            .unwrap()
+            .samples::<i16>()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(samples, wav_samples);
+
+        let sliced = pcm_slice_from_chunks(&chunks, 2, 48_000, true, 1).unwrap();
+        assert_eq!(u32::from_le_bytes(sliced[4..8].try_into().unwrap()), 4);
+        assert_eq!(u32::from_le_bytes(sliced[8..12].try_into().unwrap()), 1);
+        let sliced_samples: Vec<i16> = sliced[12..]
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        assert_eq!(sliced_samples, wav_samples[1..]);
+
+        let empty = pcm_slice_from_chunks(&[], 1, 16_000, false, 0).unwrap();
+        assert_eq!(empty.len(), 12);
+        assert_eq!(u32::from_le_bytes(empty[0..4].try_into().unwrap()), 16_000);
+        assert_eq!(u32::from_le_bytes(empty[4..8].try_into().unwrap()), 0);
     }
 }

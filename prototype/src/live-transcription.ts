@@ -25,11 +25,15 @@ interface LiveTranscriptionDependencies {
 export interface LiveTranscriber {
   readonly text: string;
   readonly segments: readonly TranscriptSegment[];
+  readonly previewSegments?: readonly TranscriptSegment[];
   readonly committedThroughSeconds: number;
   readonly elapsedSeconds: number;
+  readonly streaming?: boolean;
+  readonly finalized?: boolean;
   start(reset?: boolean): void;
   stop(): void;
   suspend(): void;
+  finalize?(finalAudio?: ArrayBuffer | Blob, signal?: AbortSignal): Promise<void>;
   observeSpeechLevel(rms: number): void;
   replaceFinalizedTranscript(segments: TranscriptSegment[]): void;
   resumeAfterPause(fragmentOffset: number, overlapSeconds: number): void;

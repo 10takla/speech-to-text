@@ -14,9 +14,10 @@ import { runScenarioTree } from './scenario-tree-workflow';
 import { createWorkflowHistory } from './workflow-history';
 import { googleCloudConfigurationError } from './google-cloud/settings';
 import { geminiTranscriptionConfigurationError } from './gemini-transcription/settings';
+import { deepgramConfigurationError } from './deepgram/settings';
 
 type ScenarioWorkflowSettings = Pick<AppSettings, 'provider' | 'groqApiKey' | 'postProcessProvider' | 'geminiApiKey'>
-  & Partial<Pick<AppSettings, 'scenarios' | 'activeScenarioId' | 'postProcessEnabled' | 'autoPasteActiveWindow' | 'geminiPrompt' | 'googleCloud' | 'geminiTranscription'>>;
+  & Partial<Pick<AppSettings, 'scenarios' | 'activeScenarioId' | 'postProcessEnabled' | 'autoPasteActiveWindow' | 'geminiPrompt' | 'googleCloud' | 'geminiTranscription' | 'deepgram'>>;
 type WorkflowSettings = Pick<AppSettings, 'historyMaxItems'> & ScenarioWorkflowSettings;
 
 export interface RecordingWorkflowDependencies {
@@ -33,8 +34,8 @@ export interface RecordingWorkflowDependencies {
   output: TextOutputPort;
   getSettings(): WorkflowSettings;
   fragments: RecordingFragment[];
-  liveTranscript?: { segments: readonly TranscriptSegment[]; throughSeconds: number };
-  liveTranscriptForStep?(step: import('./scenario').ScenarioStep): { segments: readonly TranscriptSegment[]; throughSeconds: number } | undefined;
+  liveTranscript?: { segments: readonly TranscriptSegment[]; throughSeconds: number; finalized?: boolean };
+  liveTranscriptForStep?(step: import('./scenario').ScenarioStep): { segments: readonly TranscriptSegment[]; throughSeconds: number; finalized?: boolean } | undefined;
   getFragmentOffset(): number;
   setFragmentOffset(offset: number): void;
   snapshotFragments(): Parameters<HistoryRepository['update']>[1]['fragments'];
@@ -79,6 +80,9 @@ export function getScenarioReadinessError(
         } else if (provider === 'gemini') {
           const error = geminiTranscriptionConfigurationError(step.transcription?.geminiTranscription ?? settings.geminiTranscription);
           if (error) return error;
+        } else if (provider === 'deepgram') {
+          const error = deepgramConfigurationError(step.transcription?.deepgram ?? settings.deepgram);
+          if (error) return error;
         } else if (!key?.trim()) return 'Провайдер Groq не готов: не указан API ключ.';
       }
       if (step.type === 'postprocess') {
@@ -109,6 +113,10 @@ export function getScenarioReadinessError(
   }
   if (scenario.steps.some(step => step.enabled && step.type === 'transcribe') && settings.provider === 'google-cloud') {
     const error = googleCloudConfigurationError(scenario.steps.find(step => step.type === 'transcribe')?.transcription?.googleCloud ?? settings.googleCloud);
+    if (error) return error;
+  }
+  if (scenario.steps.some(step => step.enabled && step.type === 'transcribe') && settings.provider === 'deepgram') {
+    const error = deepgramConfigurationError(scenario.steps.find(step => step.type === 'transcribe')?.transcription?.deepgram ?? settings.deepgram);
     if (error) return error;
   }
   if (scenario.steps.some(step => step.enabled && step.type === 'postprocess')) {
@@ -221,7 +229,8 @@ export async function runRecordingWorkflow(
         channels: buffer.numberOfChannels, elapsedMs: Math.round(performance.now() - decodeStartedAt) });
       if (signal?.aborted) return { status: 'cancelled' };
       persistStepStatus(transcriptionIndex, 'running');
-      if (scenario.steps[transcriptionIndex]?.transcription?.retranscribeFullRecording) {
+      const transcribeProvider = scenario.steps[transcriptionIndex]?.transcription?.provider ?? settings.provider;
+      if (transcribeProvider !== 'deepgram' && scenario.steps[transcriptionIndex]?.transcription?.retranscribeFullRecording) {
         const removedRanges = mergeRanges(dependencies.fragments.flatMap(fragment => fragment.removedRanges.map(range => ({
           start: fragment.start + range.start, end: fragment.start + range.end,
         }))), buffer.duration);

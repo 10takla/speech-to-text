@@ -6,12 +6,16 @@ import { mountGoogleCloudEditor } from './google-cloud/editor';
 import { normalizeGoogleCloudSettings } from './google-cloud/settings';
 import { mountGeminiTranscriptionEditor } from './gemini-transcription/editor';
 import { normalizeGeminiTranscriptionSettings } from './gemini-transcription/settings';
+import { mountDeepgramEditor } from './deepgram/editor';
+import { normalizeDeepgramSettings } from './deepgram/settings';
 
 const catalogs = new Map<string, ProviderModel[]>();
 
 export function mountFinalTranscriptionSetting(root: HTMLElement, step: ScenarioStep, save: () => void) {
   if (!step.transcription) return;
   const label = document.createElement('label'); label.className = 'checkbox-label';
+  label.dataset.finalTranscriptionSetting = '';
+  label.hidden = step.transcription.provider === 'deepgram';
   const control = document.createElement('input'); control.type = 'checkbox';
   control.checked = step.transcription.retranscribeFullRecording === true;
   control.setAttribute('aria-label', 'Повторно распознавать всю запись после стопа');
@@ -80,9 +84,9 @@ export function mountBranchStepSettings(root: HTMLElement, step: ScenarioStep, s
   if (step.type === 'transcribe' && step.transcription) {
     const settings = step.transcription;
     mountFinalTranscriptionSetting(root, step, save);
-    select('Провайдер речи', settings.provider, [['none', 'Не выбран'], ['groq', 'Groq'], ['google-cloud', 'Google Cloud'], ['gemini', 'Google Gemini (AI Studio)']], value => { settings.provider = value as typeof settings.provider; });
+    select('Провайдер речи', settings.provider, [['none', 'Не выбран'], ['groq', 'Groq'], ['google-cloud', 'Google Cloud'], ['gemini', 'Google Gemini (AI Studio)'], ['deepgram', 'Deepgram (Live WebSocket)']], value => { settings.provider = value as typeof settings.provider; });
     if (settings.provider === 'none') return;
-    if (settings.provider === 'google-cloud' || settings.provider === 'gemini') {
+    if (settings.provider === 'google-cloud' || settings.provider === 'gemini' || settings.provider === 'deepgram') {
       const editor = document.createElement('div'); root.append(editor);
       const onStatus = (text: string, state: 'idle' | 'ready' | 'error', details: string) => {
         queueMicrotask(() => {
@@ -94,7 +98,8 @@ export function mountBranchStepSettings(root: HTMLElement, step: ScenarioStep, s
         });
       };
       if (settings.provider === 'google-cloud') mountGoogleCloudEditor(editor, settings.googleCloud ??= normalizeGoogleCloudSettings(), saveInline, onStatus);
-      else mountGeminiTranscriptionEditor(editor, settings.geminiTranscription ??= normalizeGeminiTranscriptionSettings(), saveInline, onStatus);
+      else if (settings.provider === 'gemini') mountGeminiTranscriptionEditor(editor, settings.geminiTranscription ??= normalizeGeminiTranscriptionSettings(), saveInline, onStatus);
+      else mountDeepgramEditor(editor, settings.deepgram ??= normalizeDeepgramSettings(), saveInline, onStatus);
     } else {
       input('API-ключ', settings.apiKey, value => { settings.apiKey = value.trim(); }, 'password');
       models(() => settings.apiKey, settings.model, fetchGroqSpeechModels, value => { settings.model = value; });
@@ -106,20 +111,22 @@ export function mountBranchStepSettings(root: HTMLElement, step: ScenarioStep, s
       const temperature = input('Температура', settings.temperature, value => { settings.temperature = Number(value); }, 'number');
       temperature.min = '0'; temperature.max = '1'; temperature.step = '0.1';
     }
-    checkbox('Распознавать во время записи', settings.liveTranscriptionEnabled, value => { settings.liveTranscriptionEnabled = value; });
-    if (settings.liveTranscriptionEnabled) {
-      const silence = input('Пауза для отправки, мс', settings.liveSilenceDurationMs, value => {
-        settings.liveSilenceDurationMs = Math.max(300, Math.min(2000, Number(value) || 700));
-      }, 'number');
-      silence.min = '300'; silence.max = '2000';
-      const duration = input('Максимум фрагмента, сек', settings.liveMaxChunkDurationSeconds, value => {
-        settings.liveMaxChunkDurationSeconds = Math.max(3, Math.min(20, Number(value) || 9));
-      }, 'number');
-      duration.min = '3'; duration.max = '20';
-      const overlap = input('Перекрытие фрагментов, сек', settings.liveChunkOverlapSeconds, value => {
-        settings.liveChunkOverlapSeconds = Math.max(0, Math.min(2, Number(value) || 0));
-      }, 'number');
-      overlap.min = '0'; overlap.max = '2'; overlap.step = '0.1';
+    if (settings.provider !== 'deepgram') {
+      checkbox('Распознавать во время записи', settings.liveTranscriptionEnabled, value => { settings.liveTranscriptionEnabled = value; });
+      if (settings.liveTranscriptionEnabled) {
+        const silence = input('Пауза для отправки, мс', settings.liveSilenceDurationMs, value => {
+          settings.liveSilenceDurationMs = Math.max(300, Math.min(2000, Number(value) || 700));
+        }, 'number');
+        silence.min = '300'; silence.max = '2000';
+        const duration = input('Максимум фрагмента, сек', settings.liveMaxChunkDurationSeconds, value => {
+          settings.liveMaxChunkDurationSeconds = Math.max(3, Math.min(20, Number(value) || 9));
+        }, 'number');
+        duration.min = '3'; duration.max = '20';
+        const overlap = input('Перекрытие фрагментов, сек', settings.liveChunkOverlapSeconds, value => {
+          settings.liveChunkOverlapSeconds = Math.max(0, Math.min(2, Number(value) || 0));
+        }, 'number');
+        overlap.min = '0'; overlap.max = '2'; overlap.step = '0.1';
+      }
     }
     return;
   }

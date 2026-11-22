@@ -5,16 +5,19 @@ import { fetchGeminiTextModels, selectAvailableGeminiModel, type ProviderModel }
 import { transcribeWithGoogleCloud } from './google-cloud/transcribe';
 import type { TranscriptionStepSettings } from './scenario';
 import { transcribeWithGemini } from './gemini-transcription/transcribe';
+import { transcribeWithDeepgram } from './deepgram/transcribe';
 import { createProviderFetch } from './parallel-runs/provider-fetch';
 
 export function createTranscriptionProvider(options: () => Pick<TranscriptionStepSettings,
-  'provider' | 'googleCloud' | 'geminiTranscription' | 'apiKey' | 'model' | 'prompt' | 'temperature' | 'language'>, fetcher: typeof fetch = fetch,
+  'provider' | 'googleCloud' | 'geminiTranscription' | 'deepgram' | 'apiKey' | 'model' | 'prompt' | 'temperature' | 'language'>, fetcher: typeof fetch = fetch,
   onWaiting?: (waiting: boolean) => void): TranscriptionProvider {
+  const customFetcher = fetcher !== fetch;
   fetcher = createProviderFetch(fetcher, onWaiting);
   return { transcribe: (audio, signal) => {
     const selected = options();
     if (selected.provider === 'google-cloud') return transcribeWithGoogleCloud(audio, selected.googleCloud, signal, fetcher);
     if (selected.provider === 'gemini') return transcribeWithGemini(audio, selected.geminiTranscription, signal, fetcher);
+    if (selected.provider === 'deepgram') return transcribeWithDeepgram(audio, selected.deepgram, signal, customFetcher ? fetcher : undefined);
     if (selected.provider === 'none') return Promise.reject(new Error('Провайдер транскрибации не выбран.'));
     return transcribeTimedAudioWithGroq(audio, selected, signal, fetcher);
   } };

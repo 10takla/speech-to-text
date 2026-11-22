@@ -935,6 +935,7 @@ function stepSettingsFromAppSettings(settings: AppSettings): ScenarioStepSetting
       provider: settings.provider,
       googleCloud: settings.googleCloud,
       geminiTranscription: settings.geminiTranscription,
+      deepgram: settings.deepgram,
       apiKey: settings.groqApiKey,
       model: settings.groqModel,
       prompt: settings.groqPrompt,

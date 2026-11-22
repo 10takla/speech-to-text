@@ -5,6 +5,7 @@ import { VOICE_TRANSCRIPTION_PROMPT, LEGACY_VOICE_TRANSCRIPTION_PROMPT, LEGACY_M
 import { walkScenarioSteps } from './scenario-tree';
 import { normalizeGoogleCloudSettings, type GoogleCloudSettings } from './google-cloud/settings';
 import { normalizeGeminiTranscriptionSettings, type GeminiTranscriptionSettings } from './gemini-transcription/settings';
+import { normalizeDeepgramSettings, type DeepgramSettings } from './deepgram/settings';
 
 import {
   DEFAULT_GEMINI_API_KEY,
@@ -42,9 +43,10 @@ export interface AppSettings {
   hotkeyPause: string;
   hotkeyResume: string;
   // Провайдер распознавания
-  provider: 'groq' | 'google-cloud' | 'gemini' | 'none';
+  provider: 'groq' | 'google-cloud' | 'gemini' | 'deepgram' | 'none';
   googleCloud?: GoogleCloudSettings;
   geminiTranscription?: GeminiTranscriptionSettings;
+  deepgram?: DeepgramSettings;
   groqApiKey: string;
   groqModel: string;
   groqPrompt: string;
@@ -145,9 +147,10 @@ export function normalizeSettings(value: unknown): AppSettings {
     hotkeyCancel: oldCancelHotkey,
     hotkeyPause: oldPauseHotkey,
     hotkeyResume: oldResumeHotkey,
-    provider: enumValue('provider', ['groq', 'google-cloud', 'gemini', 'none'], defaults.provider),
+    provider: enumValue('provider', ['groq', 'google-cloud', 'gemini', 'deepgram', 'none'], defaults.provider),
     ...(isRecord(source.googleCloud) ? { googleCloud: normalizeGoogleCloudSettings(source.googleCloud) } : {}),
     ...(isRecord(source.geminiTranscription) ? { geminiTranscription: normalizeGeminiTranscriptionSettings(source.geminiTranscription) } : {}),
+    ...(isRecord(source.deepgram) ? { deepgram: normalizeDeepgramSettings(source.deepgram) } : {}),
     groqApiKey: stringValue('groqApiKey'),
     groqModel: stringValue('groqModel'),
     groqPrompt: stringValue('groqPrompt'),
@@ -369,6 +372,7 @@ export function normalizeSettings(value: unknown): AppSettings {
     provider: transcription?.provider ?? normalized.provider,
     googleCloud: transcription?.googleCloud ?? normalized.googleCloud,
     geminiTranscription: transcription?.geminiTranscription ?? normalized.geminiTranscription,
+    deepgram: transcription?.deepgram ?? normalized.deepgram,
     groqApiKey: transcription?.apiKey ?? normalized.groqApiKey,
     groqModel: transcription?.model ?? normalized.groqModel,
     groqPrompt: transcription?.prompt ?? normalized.groqPrompt,
@@ -445,6 +449,7 @@ function settingsFromLegacy(settings: Omit<AppSettings, 'scenarios' | 'activeSce
       provider: settings.provider,
       googleCloud: settings.googleCloud,
       geminiTranscription: settings.geminiTranscription,
+      deepgram: settings.deepgram,
       apiKey: settings.groqApiKey,
       model: settings.groqModel,
       prompt: settings.groqPrompt,

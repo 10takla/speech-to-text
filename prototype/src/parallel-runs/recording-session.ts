@@ -11,6 +11,8 @@ import { invokeCommand } from '../tauri-commands';
 import { createGeminiTextPostProcessor, createTranscriptionProvider } from '../provider-adapters';
 import type { AudioCapturePort, TextOutputPort } from '../ports';
 import { createLiveTranscriber, type LiveTranscriber } from '../live-transcription';
+import { createDeepgramLiveTranscriber } from '../deepgram/live';
+import { normalizeDeepgramSettings } from '../deepgram/settings';
 import { getScenarioReadinessError, runRecordingWorkflow } from '../recording-workflow';
 import { isAndroid, androidCall } from '../android-runtime';
 import { normalizeAfterStopMs, normalizeFirstWordWaitMs, waitForStopTail } from '../recording-stop';
@@ -95,7 +97,8 @@ export function createRecordingSession(host: SessionHost) {
     lastPreviewText = text;
     const hidden = usesClaude() && state === 'recording' && !claudeLivePreviewEnabled();
     const visibleText = hidden ? '' : text;
-    const fragments = !hidden && structured ? recordingPreviewFragments(recordingFragments, liveTranscriber.segments) : [];
+    const liveSegments = state === 'recording' ? (liveTranscriber.previewSegments ?? liveTranscriber.segments) : liveTranscriber.segments;
+    const fragments = !hidden && structured ? recordingPreviewFragments(recordingFragments, liveSegments) : [];
     const processing = !hidden && livePreviewProcessing;
     previewHasContent = fragments.length > 0 || !!visibleText.trim() || processing;
     container.dispatchEvent(new CustomEvent('overlay-transcription-preview', { detail: { text: visibleText, fragments, processing } }));
@@ -117,6 +120,7 @@ export function createRecordingSession(host: SessionHost) {
   const transcriptionProvider = createTranscriptionProvider(() => ({
     provider: config.provider, googleCloud: config.googleCloud,
     geminiTranscription: config.geminiTranscription,
+    deepgram: config.deepgram,
     apiKey: config.groqApiKey,
     model: config.groqModel,
     prompt: config.groqPrompt,
@@ -128,6 +132,7 @@ export function createRecordingSession(host: SessionHost) {
     return settings ? createTranscriptionProvider(() => ({
       provider: settings.provider, googleCloud: settings.googleCloud,
       geminiTranscription: settings.geminiTranscription,
+      deepgram: settings.deepgram,
       apiKey: settings.apiKey, model: settings.model, prompt: settings.prompt,
       temperature: settings.temperature, language: settings.language,
     }), fetch, waiting => waitingFor(step, 'Ожидание провайдера…', waiting)) : transcriptionProvider;
@@ -206,27 +211,58 @@ export function createRecordingSession(host: SessionHost) {
   function syncControlHotkeyScope() { host.onChange(); return Promise.resolve(); }
   let workflowAbortController: AbortController | null = null;
   const branchLiveTranscribers = new Map<string, { step: ScenarioStep; engine: LiveTranscriber }>();
-  const liveTranscriber: LiveTranscriber = createLiveTranscriber({
-    getState: () => state,
-    getSettings: () => config,
-    snapshotAudio: () => getAudioCapture().snapshot(),
-    provider: transcriptionProvider,
-    cutAudio,
-    onPreview: text => {
-      setLivePreviewText(text, true);
-    },
-    onError: error => console.warn('Не удалось обновить live-транскрибацию:', error),
-    onProcessing: status => {
-      setLivePreviewProcessing(status === 'running' && state === 'recording');
+  const primaryTranscribeStep = () => config.scenarios.find(item => item.id === config.activeScenarioId)?.steps.find(step => step.type === 'transcribe');
+  const createLiveEngine = (
+    step: ScenarioStep | undefined,
+    provider: ReturnType<typeof createTranscriptionProvider>,
+    onPreview: (text: string) => void,
+    onError: (error: unknown) => void,
+    reportStep?: () => ScenarioStep | undefined,
+  ): LiveTranscriber => {
+    const stepTranscription = step?.transcription;
+    const activeProvider = stepTranscription?.provider ?? config.provider;
+    const onProcessing = (status: 'running' | 'success' | 'error' | 'idle') => {
+      if (!step) setLivePreviewProcessing(status === 'running' && state === 'recording');
       if (state !== 'recording' && state !== 'editing') return;
-      const step = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps.find(item => item.type === 'transcribe');
-      if (!step) return;
+      const target = step ?? reportStep?.();
+      if (!target) return;
       if (status === 'idle') {
-        executionProgress.delete(step.id);
+        executionProgress.delete(target.id);
         reportExecutionProgress();
-      } else reportExecutionProgress({ id: step.id, type: step.type, status });
-    },
-  });
+      } else reportExecutionProgress({ id: target.id, type: target.type, status });
+    };
+    if (activeProvider === 'deepgram') {
+      return createDeepgramLiveTranscriber({
+        getState: () => state,
+        getDeepgramSettings: () => normalizeDeepgramSettings(stepTranscription?.deepgram ?? config.deepgram),
+        isLiveEnabled: () => true,
+        readPcm: audioCapture?.readPcm ? fromFrame => getAudioCapture().readPcm!(fromFrame) : undefined,
+        snapshotAudio: () => getAudioCapture().snapshot(),
+        onPreview,
+        onError,
+        onProcessing,
+      });
+    }
+    return createLiveTranscriber({
+      getState: () => state,
+      getSettings: () => stepTranscription ?? config,
+      snapshotAudio: () => getAudioCapture().snapshot(),
+      provider,
+      cutAudio,
+      onPreview,
+      onError,
+      onProcessing,
+    });
+  };
+  const createPrimaryLiveTranscriber = () => createLiveEngine(
+    undefined,
+    transcriptionProvider,
+    text => { setLivePreviewText(text, true); },
+    error => console.warn('Не удалось обновить live-транскрибацию:', error),
+    primaryTranscribeStep,
+  );
+  let liveTranscriberProvider = primaryTranscribeStep()?.transcription?.provider ?? config.provider;
+  let liveTranscriber: LiveTranscriber = createPrimaryLiveTranscriber();
 
   listenStorage(event => {
     if (event.key !== SETTINGS_STORAGE_KEY) return;
@@ -254,8 +290,32 @@ export function createRecordingSession(host: SessionHost) {
     branchLiveTranscribers.forEach(({ engine }) => engine.stop());
   }
 
+  function stopNonStreamingLiveTranscription() {
+    if (!liveTranscriber.streaming) liveTranscriber.stop();
+    branchLiveTranscribers.forEach(({ engine }) => {
+      if (!engine.streaming) engine.stop();
+    });
+  }
+
+  async function finalizeLiveTranscription(finalAudio: ArrayBuffer | Blob, signal?: AbortSignal) {
+    const tasks: Promise<void>[] = [];
+    if (liveTranscriber.finalize) tasks.push(liveTranscriber.finalize(finalAudio, signal));
+    else liveTranscriber.stop();
+    branchLiveTranscribers.forEach(({ engine }) => {
+      if (engine.finalize) tasks.push(engine.finalize(finalAudio, signal));
+      else engine.stop();
+    });
+    await Promise.all(tasks);
+  }
+
   function startLiveTranscription(reset = false) {
     if (reset) {
+      const nextProvider = primaryTranscribeStep()?.transcription?.provider ?? config.provider;
+      if (nextProvider !== liveTranscriberProvider) {
+        liveTranscriber.stop();
+        liveTranscriberProvider = nextProvider;
+        liveTranscriber = createPrimaryLiveTranscriber();
+      }
       branchLiveTranscribers.forEach(({ engine }) => engine.stop());
       branchLiveTranscribers.clear();
       const primary = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps.find(step => step.type === 'transcribe');
@@ -263,17 +323,12 @@ export function createRecordingSession(host: SessionHost) {
         for (const lane of step.parallelBranches ?? []) {
           const head = lane[0];
           if (head?.type !== 'transcribe') continue;
-          const engine = createLiveTranscriber({
-            getState: () => state,
-            getSettings: () => head.transcription ?? config,
-            snapshotAudio: () => getAudioCapture().snapshot(), provider: transcriptionProviderForStep(head), cutAudio,
-            onPreview: () => {}, onError: error => console.warn('Ошибка транскрибации ветки:', error),
-            onProcessing: status => {
-              if (state !== 'recording' && state !== 'editing') return;
-              if (status === 'idle') { executionProgress.delete(head.id); reportExecutionProgress(); }
-              else reportExecutionProgress({ id: head.id, type: head.type, status });
-            },
-          });
+          const engine = createLiveEngine(
+            head,
+            transcriptionProviderForStep(head),
+            () => {},
+            error => console.warn('Ошибка транскрибации ветки:', error),
+          );
           branchLiveTranscribers.set(head.id, { step: head, engine });
           add(head);
         }
@@ -818,11 +873,12 @@ export function createRecordingSession(host: SessionHost) {
       fragments: recordingFragments,
       liveTranscriptForStep: step => {
         const engine = branchLiveTranscribers.get(step.id)?.engine;
-        return engine ? { segments: engine.segments, throughSeconds: engine.committedThroughSeconds } : undefined;
+        return engine ? { segments: engine.segments, throughSeconds: engine.committedThroughSeconds, finalized: engine.finalized } : undefined;
       },
       liveTranscript: {
         segments: liveTranscriber.segments,
         throughSeconds: liveTranscriber.committedThroughSeconds,
+        finalized: liveTranscriber.finalized,
       },
       getFragmentOffset: () => fragmentOffset,
       setFragmentOffset: offset => { fragmentOffset = offset; },
@@ -929,7 +985,7 @@ export function createRecordingSession(host: SessionHost) {
     const stopRequestedAtMs = Date.now();
     const afterStopMs = normalizeAfterStopMs(config.scenarios.find(item => item.id === config.activeScenarioId)
       ?.steps.find(step => step.type === 'startRecording')?.afterStopMs);
-    stopLiveTranscription();
+    stopNonStreamingLiveTranscription();
     stopVolumeAnalysis();
     const generation = recordingGeneration;
     const workflowController = new AbortController();
@@ -949,8 +1005,11 @@ export function createRecordingSession(host: SessionHost) {
         console.info('[recording-timing] stop-native', { generation, bytes: wavBytes.byteLength,
           elapsedMs: Math.round(performance.now() - stopStartedAt) });
         if (generation !== recordingGeneration) return;
+        await finalizeLiveTranscription(wavBytes, workflowController.signal);
+        if (generation !== recordingGeneration) return;
         await processRecordedAudio(new Blob([wavBytes], { type: 'audio/wav' }), generation, workflowController.signal);
       } catch (err: unknown) {
+        stopLiveTranscription();
         if (generation !== recordingGeneration) return;
         host.onRecordingReleased();
         console.error('Ошибка завершения записи:', err);
@@ -960,6 +1019,7 @@ export function createRecordingSession(host: SessionHost) {
     }
 
     if (!mediaRecorder) {
+      stopLiveTranscription();
       host.onRecordingReleased();
       await completeOverlayProcess();
       return;
@@ -968,13 +1028,16 @@ export function createRecordingSession(host: SessionHost) {
     const recorder = mediaRecorder;
     const stream = mediaStream;
     try { await waitForStopTail(stopRequestedAtMs, afterStopMs, workflowController.signal); }
-    catch (error) { if (workflowController.signal.aborted) return; throw error; }
-    if (generation !== recordingGeneration) return;
+    catch (error) { stopLiveTranscription(); if (workflowController.signal.aborted) return; throw error; }
+    if (generation !== recordingGeneration) { stopLiveTranscription(); return; }
     recorder.onstop = async () => {
-      if (generation !== recordingGeneration) return;
+      if (generation !== recordingGeneration) { stopLiveTranscription(); return; }
       const mime = recorder.mimeType || 'audio/webm';
+      const audioBlob = new Blob(recordedChunks, { type: mime });
       host.onRecordingReleased();
-      await processRecordedAudio(new Blob(recordedChunks, { type: mime }), generation, workflowController.signal);
+      await finalizeLiveTranscription(audioBlob, workflowController.signal);
+      if (generation !== recordingGeneration) return;
+      await processRecordedAudio(audioBlob, generation, workflowController.signal);
       recordedChunks = [];
       mediaRecorder = null;
     };
@@ -1074,15 +1137,17 @@ export function createRecordingSession(host: SessionHost) {
         if (nativeRecording && invoke) {
           await getAudioCapture().pause();
           if (generation !== recordingGeneration) return null;
-          stopLiveTranscription();
+          stopNonStreamingLiveTranscription();
           stopVolumeAnalysis();
           setOverlayState('editing');
           const bytes = await getAudioCapture().snapshot();
+          await finalizeLiveTranscription(bytes);
+          if (sessionClosed || generation !== recordingGeneration) return null;
           audioBlob = new Blob([bytes], { type: 'audio/wav' });
         } else if (mediaRecorder) {
           const recorder = mediaRecorder;
           recorder.pause();
-          stopLiveTranscription();
+          stopNonStreamingLiveTranscription();
           stopVolumeAnalysis();
           setOverlayState('editing');
           await new Promise<void>((resolve, reject) => {
@@ -1090,6 +1155,8 @@ export function createRecordingSession(host: SessionHost) {
             try { recorder.requestData(); } catch (error) { reject(error); }
           });
           audioBlob = new Blob(recordedChunks, { type: recorder.mimeType || 'audio/webm' });
+          await finalizeLiveTranscription(audioBlob);
+          if (sessionClosed || generation !== recordingGeneration) return null;
         } else return null;
         if (sessionClosed || generation !== recordingGeneration) return null;
         const buffer = await decodeAudio(await audioBlob.arrayBuffer());
@@ -1097,6 +1164,7 @@ export function createRecordingSession(host: SessionHost) {
         fragmentOffset = appendRecordingFragments(buffer, recordingFragments, fragmentOffset, {
           segments: liveTranscriber.segments,
           throughSeconds: liveTranscriber.committedThroughSeconds,
+          finalized: liveTranscriber.finalized,
         });
         if (!recordingFragments.length) return { kind: 'action' as const, finish: false };
         activeEditor = createFragmentEditors(container.querySelector('.overlay-body')!, recordingFragments,

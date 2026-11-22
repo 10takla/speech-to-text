@@ -7,6 +7,7 @@ import {
 import type { GeminiGenerationSettings } from './provider-models';
 import { normalizeGoogleCloudSettings, type GoogleCloudSettings } from './google-cloud/settings';
 import { normalizeGeminiTranscriptionSettings, type GeminiTranscriptionSettings } from './gemini-transcription/settings';
+import { normalizeDeepgramSettings, type DeepgramSettings } from './deepgram/settings';
 import { VOICE_TRANSCRIPTION_PROMPT, VOICE_INPUT_CLEANUP_PROMPT, VOICE_ANSWER_PROMPT } from './scenario-prompts';
 import { DEFAULT_AFTER_STOP_MS, DEFAULT_FIRST_WORD_WAIT_MS, normalizeAfterStopMs, normalizeFirstWordWaitMs } from './recording-stop';
 import { AUTO_SPEECH_LANGUAGE, normalizeSpeechSettings, type SystemSpeechSettings } from './speech-settings';
@@ -86,9 +87,10 @@ export interface ScenarioStep {
 }
 
 export interface TranscriptionStepSettings {
-  provider: 'groq' | 'google-cloud' | 'gemini' | 'none';
+  provider: 'groq' | 'google-cloud' | 'gemini' | 'deepgram' | 'none';
   googleCloud?: GoogleCloudSettings;
   geminiTranscription?: GeminiTranscriptionSettings;
+  deepgram?: DeepgramSettings;
   apiKey: string;
   model: string;
   prompt: string;
@@ -551,9 +553,10 @@ function normalizeStep(
 function normalizeTranscriptionSettings(value: unknown, defaults: TranscriptionStepSettings): TranscriptionStepSettings {
   if (!isRecord(value)) return { ...defaults };
   return {
-    provider: value.provider === 'none' || value.provider === 'google-cloud' || value.provider === 'gemini' ? value.provider : 'groq',
+    provider: value.provider === 'none' || value.provider === 'google-cloud' || value.provider === 'gemini' || value.provider === 'deepgram' ? value.provider : 'groq',
     ...(isRecord(value.googleCloud) ? { googleCloud: normalizeGoogleCloudSettings(value.googleCloud) } : {}),
     ...(isRecord(value.geminiTranscription) ? { geminiTranscription: normalizeGeminiTranscriptionSettings(value.geminiTranscription) } : {}),
+    ...(isRecord(value.deepgram) ? { deepgram: normalizeDeepgramSettings(value.deepgram) } : {}),
     apiKey: stringValue(value.apiKey, defaults.apiKey),
     model: stringValue(value.model, defaults.model),
     prompt: stringValue(value.prompt, defaults.prompt),
