@@ -10,7 +10,7 @@ function mountCliDictationSettings(
   step: ScenarioStep,
   save: () => void,
   label: string,
-  openCommand: 'open_claude_code' | 'open_antigravity_cli',
+  openCommand: 'open_claude_code' | 'open_antigravity_cli' | 'open_claude_chat',
 ) {
   const afterStopLabel = document.createElement('label');
   afterStopLabel.className = 'scenario-step-setting-label scenario-step-setting-label-inline';
@@ -88,4 +88,46 @@ export function mountClaudeCodeSettings(root: HTMLElement, step: ScenarioStep, s
 
 export function mountAntigravityCliSettings(root: HTMLElement, step: ScenarioStep, save: () => void) {
   mountCliDictationSettings(root, step, save, 'Antigravity CLI', 'open_antigravity_cli');
+}
+
+export function mountClaudeChatSettings(root: HTMLElement, step: ScenarioStep, save: () => void) {
+  const afterStopLabel = document.createElement('label');
+  afterStopLabel.className = 'scenario-step-setting-label scenario-step-setting-label-inline';
+  afterStopLabel.textContent = 'Время после стопа:';
+  const afterStopInput = document.createElement('input');
+  afterStopInput.type = 'number';
+  afterStopInput.min = '0';
+  afterStopInput.step = '1';
+  afterStopInput.value = String(normalizeAfterStopMs(step.afterStopMs));
+  afterStopInput.setAttribute('aria-label', 'Время после стопа, мс');
+  afterStopInput.title = 'Продолжать запись в Claude Chat после стопа, чтобы не обрезать последние слова; 0 — остановить сразу.';
+  afterStopInput.addEventListener('change', () => {
+    const value = afterStopInput.valueAsNumber;
+    if (!Number.isSafeInteger(value) || value < 0) {
+      afterStopInput.value = String(normalizeAfterStopMs(step.afterStopMs));
+      return;
+    }
+    step.afterStopMs = value;
+    save();
+  });
+  afterStopLabel.append(afterStopInput, document.createTextNode(' мс'));
+  root.append(afterStopLabel);
+
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'btn secondary';
+  open.textContent = 'Открыть Claude Chat';
+  open.disabled = !isTauri() || isAndroid || !/Windows/i.test(navigator.userAgent);
+  if (open.disabled) open.title = 'Доступно в приложении для Windows';
+  const status = document.createElement('span');
+  status.setAttribute('role', 'status');
+  status.hidden = true;
+  open.addEventListener('click', async () => {
+    open.disabled = true;
+    status.hidden = true;
+    try { await invokeCommand(invoke, 'open_claude_chat'); }
+    catch (error) { status.textContent = errorMessage(error); status.hidden = false; }
+    finally { open.disabled = false; }
+  });
+  root.append(open, status);
 }

@@ -17,7 +17,7 @@ export async function runScenarioTree(audio: Blob, scenario: Scenario, dependenc
   const states = new Map<string, HistoryStep>(steps.map(step => [step.id, {
     id: step.id, type: step.type, title: getScenarioStepContract(step.type).title,
     status: !step.enabled ? 'skipped' : isTriggerStep(step) ? 'success' : 'pending',
-    ...((step.type === 'claudeCode' || step.type === 'antigravityCli' || step.type === 'selectedText') && dependencies.initialText !== undefined ? { text: dependencies.initialText } : {}),
+    ...((step.type === 'claudeCode' || step.type === 'claudeChat' || step.type === 'antigravityCli' || step.type === 'selectedText') && dependencies.initialText !== undefined ? { text: dependencies.initialText } : {}),
   }]));
   const mainTranscribe = scenario.steps.find(step => step.type === 'transcribe');
   const snapshot = () => steps.map(step => states.get(step.id)!);
@@ -231,7 +231,7 @@ export async function runScenarioTree(audio: Blob, scenario: Scenario, dependenc
   let result: Data | null = null;
   try {
     if (dependencies.initialError) {
-      const source = scenario.steps.find(step => step.type === 'claudeCode' || step.type === 'antigravityCli' || step.type === 'selectedText');
+      const source = scenario.steps.find(step => step.type === 'claudeCode' || step.type === 'claudeChat' || step.type === 'antigravityCli' || step.type === 'selectedText');
       if (source) mark(source, 'error', undefined, dependencies.initialError);
       throw new Error(dependencies.initialError);
     }

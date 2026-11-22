@@ -1,5 +1,5 @@
 import type { AppSettings } from './config';
-import { mountClaudeCodeSettings, mountAntigravityCliSettings } from './claude-code-settings';
+import { mountClaudeCodeSettings, mountAntigravityCliSettings, mountClaudeChatSettings } from './claude-code-settings';
 import { hasStepSettings } from './step-settings-block';
 import { createScenarioList, updateScenarioResetButtons, updateScenarioTriggerWarnings } from './scenario-list';
 import { renderDuplicateWarnings } from './scenario-duplicate-warnings';
@@ -30,7 +30,7 @@ import {
   type ScenarioStepType,
 } from './scenario';
 
-const stepChoices: readonly ScenarioStepType[] = ['startRecording', 'claudeCode', 'antigravityCli', 'selectedText', 'transcribe', 'postprocess', 'copy', 'paste', 'speak'];
+const stepChoices: readonly ScenarioStepType[] = ['startRecording', 'claudeCode', 'claudeChat', 'antigravityCli', 'selectedText', 'transcribe', 'postprocess', 'copy', 'paste', 'speak'];
 
 export function mountScenarioEditor(
   root: HTMLElement,
@@ -402,7 +402,7 @@ export function mountScenarioEditor(
       });
       row.append(typeSelect);
 
-      if (step.type === 'claudeCode' || step.type === 'antigravityCli') {
+      if (step.type === 'claudeCode' || step.type === 'claudeChat' || step.type === 'antigravityCli') {
         const details = document.createElement('details');
         details.className = 'scenario-step-details';
         restoreStepDetails(details, step.id);
@@ -411,6 +411,7 @@ export function mountScenarioEditor(
         const content = document.createElement('div');
         content.className = 'scenario-step-settings';
         if (step.type === 'claudeCode') mountClaudeCodeSettings(content, step, save);
+        else if (step.type === 'claudeChat') mountClaudeChatSettings(content, step, save);
         else mountAntigravityCliSettings(content, step, save);
         if (!isAndroid) {
           const stopOptions = document.createElement('div');

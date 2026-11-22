@@ -17,6 +17,7 @@ import {
   createDefaultScenario,
   createVoiceAnswerScenario,
   createClaudeCodeScenario,
+  createClaudeChatScenario,
   createAntigravityCliScenario,
   createSelectedTextSpeechScenario,
   createStep,
@@ -280,6 +281,9 @@ export function normalizeSettings(value: unknown): AppSettings {
   if (!isAndroid && storedScenarioVersion < 26 && !scenarios.some(scenario => scenario.id === 'antigravity-cli-test')) {
     scenarios.push(createAntigravityCliScenario());
   }
+  if (!isAndroid && storedScenarioVersion < 27 && !scenarios.some(scenario => scenario.id === 'claude-chat-test')) {
+    scenarios.push(createClaudeChatScenario());
+  }
   if (!isAndroid && storedScenarioVersion < 21 && !scenarios.some(scenario => scenario.id === 'selected-text-speech-scenario')) {
     scenarios.push(createSelectedTextSpeechScenario());
   }
@@ -397,7 +401,7 @@ export function normalizeSettings(value: unknown): AppSettings {
     scenarios,
     activeScenarioId,
     androidScenarioId,
-    scenarioVersion: 26,
+    scenarioVersion: 27,
   };
 }
 
@@ -440,10 +444,10 @@ export function defaultSettings(): AppSettings {
     autoCopyClipboard: true,
     autoPasteActiveWindow: true,
     historyMaxItems: 10,
-    scenarios: [scenario, createVoiceAnswerScenario(), ...(!isAndroid ? [createSelectedTextSpeechScenario(), createClaudeCodeScenario(), createAntigravityCliScenario()] : [])],
+    scenarios: [scenario, createVoiceAnswerScenario(), ...(!isAndroid ? [createSelectedTextSpeechScenario(), createClaudeCodeScenario(), createClaudeChatScenario(), createAntigravityCliScenario()] : [])],
     activeScenarioId: scenario.id,
     androidScenarioId: scenario.id,
-    scenarioVersion: 26,
+    scenarioVersion: 27,
   };
 }
 

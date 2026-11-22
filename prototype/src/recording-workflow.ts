@@ -163,9 +163,9 @@ export async function runRecordingWorkflow(
     type: step.type,
     title: getScenarioStepContract(step.type).title,
     status: !step.enabled ? 'skipped' : isTriggerStep(step) ? 'success' : 'pending',
-    ...((step.type === 'claudeCode' || step.type === 'antigravityCli' || step.type === 'selectedText') && dependencies.initialText !== undefined ? { text: dependencies.initialText } : {}),
+    ...((step.type === 'claudeCode' || step.type === 'claudeChat' || step.type === 'antigravityCli' || step.type === 'selectedText') && dependencies.initialText !== undefined ? { text: dependencies.initialText } : {}),
   }));
-  const transcriptionIndex = scenario.steps.findIndex(step => step.type === 'transcribe' || step.type === 'claudeCode' || step.type === 'antigravityCli' || step.type === 'selectedText');
+  const transcriptionIndex = scenario.steps.findIndex(step => step.type === 'transcribe' || step.type === 'claudeCode' || step.type === 'claudeChat' || step.type === 'antigravityCli' || step.type === 'selectedText');
   const historyStartedAt = performance.now();
   dependencies.onStage('Сохранение записи...');
   // Not awaited: inserting the text must not wait for IndexedDB. Later writes

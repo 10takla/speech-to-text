@@ -42,7 +42,7 @@ export function scenarioTriggerProblem(scenarios: readonly Scenario[], scenario:
 // from a selection has nothing to stop.
 export function scenarioHasStop(scenario: Scenario): boolean {
   const type = scenario.steps.find(step => isTriggerStep(step))?.type;
-  return type === 'startRecording' || type === 'claudeCode' || type === 'antigravityCli';
+  return type === 'startRecording' || type === 'claudeCode' || type === 'claudeChat' || type === 'antigravityCli';
 }
 
 function stopKey(scenario: Scenario): string {

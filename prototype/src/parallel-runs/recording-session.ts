@@ -158,17 +158,25 @@ export function createRecordingSession(host: SessionHost) {
   let mediaRecorder: MediaRecorder | null = null;
   let recordedChunks: Blob[] = [];
   let nativeRecording = false;
-  const cliSource = (): 'claudeCode' | 'antigravityCli' | null => {
+  const cliSource = (): 'claudeCode' | 'claudeChat' | 'antigravityCli' | null => {
     const type = config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0]?.type;
-    return type === 'claudeCode' || type === 'antigravityCli' ? type : null;
+    return type === 'claudeCode' || type === 'claudeChat' || type === 'antigravityCli' ? type : null;
   };
-  const cliCommands = (kind: 'claudeCode' | 'antigravityCli') => kind === 'claudeCode'
+  const cliCommands = (kind: 'claudeCode' | 'claudeChat' | 'antigravityCli') => kind === 'claudeCode'
     ? {
         label: 'Claude Code',
         start: 'start_claude_dictation' as const,
         poll: 'poll_claude_dictation' as const,
         stop: 'stop_claude_dictation' as const,
         cancel: 'cancel_claude_code' as const,
+      }
+    : kind === 'claudeChat'
+    ? {
+        label: 'Claude Chat',
+        start: 'start_claude_chat_dictation' as const,
+        poll: 'poll_claude_chat_dictation' as const,
+        stop: 'stop_claude_chat_dictation' as const,
+        cancel: 'cancel_claude_chat' as const,
       }
     : {
         label: 'Antigravity CLI',
@@ -186,7 +194,7 @@ export function createRecordingSession(host: SessionHost) {
   // The scenario starts from the text selected in another application, without recording.
   const usesSelection = () => config.scenarios.find(item => item.id === config.activeScenarioId)?.steps[0]?.type === 'selectedText';
   let claudeRecording = false;
-  let activeCliKind: 'claudeCode' | 'antigravityCli' | null = null;
+  let activeCliKind: 'claudeCode' | 'claudeChat' | 'antigravityCli' | null = null;
   let claudePoll: ReturnType<typeof setTimeout> | undefined;
   // Claude Code records the voice itself. A parallel capture of the default
   // microphone drives the level indicator and keeps the audio for history.

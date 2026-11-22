@@ -9,6 +9,13 @@ type CommandContract = {
   prepare_claude_code: { args: { enabled: boolean }; result: void };
   poll_claude_dictation: { args: { runId: string; live: boolean; known: string | null }; result: { finished: boolean; text: string | null } };
   claude_code_running: { args: undefined; result: boolean };
+  open_claude_chat: { args: undefined; result: void };
+  prepare_claude_chat: { args: { enabled: boolean }; result: void };
+  claude_chat_running: { args: undefined; result: boolean };
+  start_claude_chat_dictation: { args: { runId: string }; result: void };
+  stop_claude_chat_dictation: { args: { runId: string; afterStopMs?: number; firstWordWaitMs?: number }; result: string };
+  poll_claude_chat_dictation: { args: { runId: string; live: boolean; known: string | null }; result: { finished: boolean; text: string | null } };
+  cancel_claude_chat: { args: { runId: string } | undefined; result: void };
   open_antigravity_cli: { args: undefined; result: void };
   cancel_antigravity_cli: { args: { runId: string } | undefined; result: void };
   start_antigravity_dictation: { args: { runId: string }; result: void };

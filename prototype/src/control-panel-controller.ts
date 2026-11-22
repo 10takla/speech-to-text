@@ -68,6 +68,7 @@ function saveSettingsPreservingOverlayPosition(value: typeof settings) {
   refreshScenarioResetState();
   void syncClaudeCodeConsole();
   void syncAntigravityCliConsole();
+  void syncClaudeChatWindow();
 }
 // The hidden Claude Code / Antigravity CLI consoles start once some enabled
 // scenario begins with them and close when none does.
@@ -100,6 +101,21 @@ async function syncAntigravityCliConsole() {
   } catch (error) {
     if (antigravityCliConsoleWanted === wanted) antigravityCliConsoleWanted = undefined;
     console.warn('Не удалось подготовить Antigravity CLI:', error);
+  }
+}
+let claudeChatWindowWanted: boolean | undefined;
+async function syncClaudeChatWindow() {
+  if (isAndroid || !isTauri() || !/Windows/i.test(navigator.userAgent)) return;
+  const wanted = settings.scenarios.some(scenario => scenario.enabled && scenario.steps[0]?.type === 'claudeChat'
+    && scenario.steps[0].enabled);
+  if (wanted === claudeChatWindowWanted) return;
+  claudeChatWindowWanted = wanted;
+  try {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invokeCommand(invoke, 'prepare_claude_chat', { enabled: wanted });
+  } catch (error) {
+    if (claudeChatWindowWanted === wanted) claudeChatWindowWanted = undefined;
+    console.warn('Не удалось подготовить Claude Chat:', error);
   }
 }
 function refreshScenarioResetState() {

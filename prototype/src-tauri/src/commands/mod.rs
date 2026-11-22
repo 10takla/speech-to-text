@@ -5,6 +5,8 @@ use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalRect, PhysicalSize};
 mod audio;
 mod claude_code;
 pub use claude_code::{open_claude_code, cancel_claude_code, claude_code_running, start_claude_dictation, stop_claude_dictation, poll_claude_dictation, prepare_claude_code};
+mod claude_chat;
+pub use claude_chat::{open_claude_chat, prepare_claude_chat, claude_chat_running, start_claude_chat_dictation, stop_claude_chat_dictation, poll_claude_chat_dictation, cancel_claude_chat};
 mod antigravity_cli;
 pub use antigravity_cli::{open_antigravity_cli, cancel_antigravity_cli, antigravity_cli_running, start_antigravity_dictation, stop_antigravity_dictation, poll_antigravity_dictation, prepare_antigravity_cli};
 mod clipboard;

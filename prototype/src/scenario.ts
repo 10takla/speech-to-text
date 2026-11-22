@@ -14,7 +14,7 @@ import { AUTO_SPEECH_LANGUAGE, normalizeSpeechSettings, type SystemSpeechSetting
 import { normalizeSpeechProvider, normalizeSpeechProviders, speechConfigurationError, type SpeechProvider, type SpeechProviderSettings } from './speech-provider-settings';
 
 export type ScenarioDataType = 'trigger' | 'audio' | 'text' | 'void';
-export type ScenarioStepType = 'startRecording' | 'claudeCode' | 'antigravityCli' | 'selectedText' | 'transcribe' | 'postprocess' | 'copy' | 'paste' | 'speak';
+export type ScenarioStepType = 'startRecording' | 'claudeCode' | 'claudeChat' | 'antigravityCli' | 'selectedText' | 'transcribe' | 'postprocess' | 'copy' | 'paste' | 'speak';
 export type ScenarioStepCategory = 'source' | 'transformation' | 'action';
 export type ScenarioStartSound = 'chime' | 'beep' | 'none';
 export type ScenarioSoundProfile = 'default' | 'soft';
@@ -153,6 +153,7 @@ export const DEFAULT_SCENARIO_STEP_SETTINGS: ScenarioStepSettingsDefaults = {
 
 export const SCENARIO_STEP_CONTRACTS: readonly ScenarioStepContract[] = [
   { type: 'claudeCode', category: 'source', title: 'Claude Code CLI', input: 'trigger', outputs: ['text'] },
+  { type: 'claudeChat', category: 'source', title: 'Claude Chat', input: 'trigger', outputs: ['text'] },
   { type: 'antigravityCli', category: 'source', title: 'Antigravity CLI', input: 'trigger', outputs: ['text'] },
   { type: 'selectedText', category: 'source', title: 'Выделенный текст', input: 'trigger', outputs: ['text'] },
   { type: 'startRecording', category: 'source', title: 'Запись', input: 'trigger', outputs: ['audio'] },
@@ -222,6 +223,15 @@ export function createClaudeCodeScenario(): Scenario {
     ...voiceInput.steps.slice(2).map(step => ({ ...step, id: `claude-code-${step.type}` })),
   ];
   return { id: 'claude-code-test', name: 'Claude Code', enabled: false, steps };
+}
+
+export function createClaudeChatScenario(): Scenario {
+  const voiceInput = createDefaultScenario();
+  const steps = [
+    { ...createStep('claudeChat'), id: 'claude-chat-test-step' },
+    ...voiceInput.steps.slice(2).map(step => ({ ...step, id: `claude-chat-${step.type}` })),
+  ];
+  return { id: 'claude-chat-test', name: 'Claude Chat', enabled: false, steps };
 }
 
 export function createAntigravityCliScenario(): Scenario {
@@ -332,7 +342,7 @@ export function scenarioCancelHotkey(scenario: Pick<Scenario, 'hotkeyCancel'> | 
 
 // Steps that start a scenario on a hotkey.
 export function isTriggerStep(step: { type: ScenarioStepType }): boolean {
-  return step.type === 'startRecording' || step.type === 'claudeCode' || step.type === 'antigravityCli' || step.type === 'selectedText';
+  return step.type === 'startRecording' || step.type === 'claudeCode' || step.type === 'claudeChat' || step.type === 'antigravityCli' || step.type === 'selectedText';
 }
 
 export function createStep(
@@ -348,7 +358,7 @@ export function createStep(
   // Actions and speech may show their text in the overlay: off for actions, on for speech.
   if (contract.category === 'action') step.showTextInOverlay = false;
   if (type === 'speak') step.showTextInOverlay = true;
-  if (type === 'claudeCode' || type === 'antigravityCli') { step.hotkey = 'Control+Shift+KeyD'; step.afterStopMs = DEFAULT_AFTER_STOP_MS; step.firstWordWaitMs = DEFAULT_FIRST_WORD_WAIT_MS; step.liveTranscription = true; }
+  if (type === 'claudeCode' || type === 'claudeChat' || type === 'antigravityCli') { step.hotkey = 'Control+Shift+KeyD'; step.afterStopMs = DEFAULT_AFTER_STOP_MS; step.firstWordWaitMs = DEFAULT_FIRST_WORD_WAIT_MS; step.liveTranscription = true; }
   if (type === 'selectedText') step.hotkey = 'Control+Shift+KeyS';
   if (type === 'startRecording') {
     step.afterStopMs = DEFAULT_AFTER_STOP_MS;
@@ -382,7 +392,7 @@ export function canDisableScenarioStep(step: ScenarioStep): boolean {
 export function validateScenario(scenario: Scenario): string | null {
   if (!scenario.name.trim()) return 'Укажите название сценария.';
   if (!scenario.steps.length) return 'Добавьте источник записи.';
-  if (scenario.steps.length < 2 && scenario.steps[0].type !== 'claudeCode' && scenario.steps[0].type !== 'antigravityCli' && scenario.steps[0].type !== 'selectedText') return 'Добавьте триггер записи и транскрибацию.';
+  if (scenario.steps.length < 2 && scenario.steps[0].type !== 'claudeCode' && scenario.steps[0].type !== 'claudeChat' && scenario.steps[0].type !== 'antigravityCli' && scenario.steps[0].type !== 'selectedText') return 'Добавьте триггер записи и транскрибацию.';
   if (getScenarioStepContract(scenario.steps[0].type).category !== 'source') return 'Первым шагом должен быть источник записи.';
 
   const seenTypes = new Set<ScenarioStepType>();
@@ -426,7 +436,7 @@ export function validateScenario(scenario: Scenario): string | null {
   const problem = validateLane(scenario.steps, 'trigger');
   if (problem) return problem;
 
-  if (!seenTypes.has('transcribe') && !seenTypes.has('claudeCode') && !seenTypes.has('antigravityCli') && !seenTypes.has('selectedText')) return 'Добавьте транскрибацию.';
+  if (!seenTypes.has('transcribe') && !seenTypes.has('claudeCode') && !seenTypes.has('claudeChat') && !seenTypes.has('antigravityCli') && !seenTypes.has('selectedText')) return 'Добавьте транскрибацию.';
   return null;
 }
 
@@ -523,7 +533,7 @@ function normalizeStep(
   if ((step.type === 'claudeCode' || step.type === 'antigravityCli' || step.type === 'startRecording') && typeof value.hotkeyStop === 'string') {
     step.hotkeyStop = value.hotkeyStop;
   }
-  if (step.type === 'claudeCode' || step.type === 'antigravityCli') {
+  if (step.type === 'claudeCode' || step.type === 'claudeChat' || step.type === 'antigravityCli') {
     step.hotkey = typeof value.hotkey === 'string' ? value.hotkey : 'Control+Shift+KeyD';
     step.afterStopMs = normalizeAfterStopMs(value.afterStopMs);
     step.firstWordWaitMs = normalizeFirstWordWaitMs(value.firstWordWaitMs);
