@@ -43,6 +43,7 @@ struct BridgeState {
     final_text: Option<String>,
     error: Option<String>,
     commands: VecDeque<&'static str>,
+    sse_epoch: u64,
 }
 
 impl Default for BridgeState {
@@ -54,6 +55,7 @@ impl Default for BridgeState {
             final_text: None,
             error: None,
             commands: VecDeque::new(),
+            sse_epoch: 0,
         }
     }
 }
@@ -108,25 +110,45 @@ fn start_bridge_server() -> Result<(u16, String), String> {
                 }
 
                 if method == "GET" && path == events_path {
-                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: keep-alive\r\n\r\n");
-                    let _ = stream.flush();
+                    let my_epoch = {
+                        let Ok(mut guard) = BRIDGE.lock() else { return };
+                        let state = guard.get_or_insert_with(BridgeState::default);
+                        state.sse_epoch += 1;
+                        let epoch = state.sse_epoch;
+                        BRIDGE_WAKE.notify_all();
+                        epoch
+                    };
+                    if stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: keep-alive\r\n\r\n").is_err()
+                        || stream.flush().is_err()
+                    {
+                        return;
+                    }
                     loop {
                         let cmd = {
                             let Ok(mut guard) = BRIDGE.lock() else { return };
                             loop {
                                 let state = guard.get_or_insert_with(BridgeState::default);
+                                if state.sse_epoch != my_epoch { return; }
                                 if let Some(cmd) = state.commands.pop_front() { break cmd; }
-                                let (next, _) = match BRIDGE_WAKE.wait_timeout(guard, Duration::from_secs(15)) {
+                                let (next, _) = match BRIDGE_WAKE.wait_timeout(guard, Duration::from_secs(10)) {
                                     Ok(res) => res,
                                     Err(_) => return,
                                 };
                                 guard = next;
+                                if guard.as_ref().is_some_and(|s| s.sse_epoch != my_epoch) { return; }
                                 if guard.as_ref().is_some_and(|s| s.commands.is_empty()) {
                                     if stream.write_all(b": ping\n\n").is_err() || stream.flush().is_err() { return; }
                                 }
                             }
                         };
                         if stream.write_all(format!("data: {cmd}\n\n").as_bytes()).is_err() || stream.flush().is_err() {
+                            // Put command back so a freshly connected SSE stream can deliver it.
+                            if let Ok(mut guard) = BRIDGE.lock() {
+                                if let Some(state) = guard.as_mut() {
+                                    state.commands.push_front(cmd);
+                                    BRIDGE_WAKE.notify_all();
+                                }
+                            }
                             return;
                         }
                     }
@@ -231,6 +253,17 @@ fn prepare_extension_dir(port: u16, token: &str) -> Result<PathBuf, String> {
     Ok(ext_dir)
 }
 
+fn kill_stale_profile_edge(profile: &std::path::Path) {
+    let needle = profile.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        "Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | Where-Object {{ $_.CommandLine -like '*{needle}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}"
+    );
+    let _ = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
+        .creation_flags(0x08000000)
+        .status();
+}
+
 fn ensure(visible: bool) -> Result<(), String> {
     let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
     let alive = slot.as_mut().is_some_and(|s| s.child.try_wait().ok().flatten().is_none() && unsafe { IsWindow(s.hwnd as HWND) != 0 });
@@ -247,6 +280,15 @@ fn ensure(visible: bool) -> Result<(), String> {
             .join("speech-to-text")
             .join("claude-web");
         std::fs::create_dir_all(&profile).map_err(|e| e.to_string())?;
+        // Terminate any orphaned Edge left over from a previous app instance using our isolated profile,
+        // so the new Edge starts cleanly with the fresh extension config and does not delegate to a stale process.
+        kill_stale_profile_edge(&profile);
+        if let Ok(mut guard) = BRIDGE.lock() {
+            if let Some(state) = guard.as_mut() {
+                state.ready = false;
+                state.commands.clear();
+            }
+        }
         let job = ProcessJob::create()?;
         let child = Command::new(&exe)
             .args([
@@ -256,6 +298,8 @@ fn ensure(visible: bool) -> Result<(), String> {
                 "--no-default-browser-check",
                 "--disable-sync",
                 "--mute-audio",
+                "--hide-crash-restore-bubble",
+                "--disable-session-crashed-bubble",
                 "https://claude.ai/new",
             ])
             .creation_flags(0x08000000) // CREATE_NO_WINDOW
@@ -327,6 +371,7 @@ pub fn start(run_id: &str) -> Result<(), String> {
         state.live_text.clear();
         state.final_text = None;
         state.error = None;
+        state.commands.clear();
     }
     let deadline = Instant::now() + Duration::from_secs(10);
     {

@@ -64,8 +64,8 @@
     const root = findComposerRoot();
     return visibleButtonsIn(root).find((btn) => {
       const label = buttonLabel(btn).toLowerCase();
-      if (/cancel|discard|close|отмен|закрыт|attach/.test(label)) return false;
-      return /dictat|voice|mic|record|диктов|голос|микрофон/.test(label);
+      if (/cancel|discard|close|stop|finish|confirm|отмен|закрыт|заверш|останов|подтверд|attach|voice-mode|голосовой режим/.test(label)) return false;
+      return /dictat|диктов/.test(label) || (/mic|микрофон/.test(label) && !/voice-mode/.test(label));
     });
   }
 
@@ -86,8 +86,8 @@
     }
     return buttons.find((btn) => {
       const label = buttonLabel(btn).toLowerCase();
-      if (/cancel|discard|отмен|attach|добавить/.test(label)) return false;
-      return /stop|confirm|done|finish|insert|accept|complete|останов|подтверд|встав|принять|диктов|dictat|voice/.test(label);
+      if (/cancel|discard|отмен|attach|добавить|voice-mode|голосовой режим/.test(label)) return false;
+      return /завершить диктовку|stop.*(dictat|voice|record)|confirm|done|finish|insert|accept|complete|останов|подтверд|встав|принять/.test(label);
     });
   }
 
@@ -101,6 +101,29 @@
   }
 
   function handleStart() {
+    cleanup();
+    const cancelBtn = findCancelButton();
+    if (cancelBtn) {
+      post({ event: 'debug', message: 'start: cancelling leftover dictation before starting' });
+      cancelBtn.click();
+      let tries = 0;
+      const waitReady = () => {
+        const startBtn = findStartButton();
+        if (startBtn) {
+          const el = findInput();
+          if (el) clearInput(el);
+          post({ event: 'debug', message: `start: clicking ${JSON.stringify(buttonLabel(startBtn))}` });
+          active = true;
+          startBtn.click();
+          post({ event: 'started' });
+          return;
+        }
+        if (++tries < 20) setTimeout(waitReady, 50);
+        else post({ event: 'error', error: 'Не удалось сбросить предыдущую диктовку на странице Claude Chat.' });
+      };
+      setTimeout(waitReady, 50);
+      return;
+    }
     const el = findInput();
     if (el) clearInput(el);
     const btn = findStartButton();

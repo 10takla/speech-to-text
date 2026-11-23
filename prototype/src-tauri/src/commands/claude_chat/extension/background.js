@@ -28,7 +28,8 @@ function sendToClaudeTab(cmd) {
       void post({ event: 'error', error: 'Вкладка Claude Chat не найдена.' });
       return;
     }
-    chrome.tabs.sendMessage(tabs[0].id, { cmd }, () => {
+    const target = tabs.find((t) => t.active) || tabs[0];
+    chrome.tabs.sendMessage(target.id, { cmd }, () => {
       if (chrome.runtime.lastError) {
         void post({ event: 'error', error: 'Скрипт на странице Claude Chat не отвечает. Обновите страницу.' });
       }
