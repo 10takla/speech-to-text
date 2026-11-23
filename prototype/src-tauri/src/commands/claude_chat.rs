@@ -10,6 +10,22 @@ pub async fn open_claude_chat() -> Result<(), String> {
 }
 
 #[tauri::command]
+pub async fn hide_claude_chat() -> Result<(), String> {
+    #[cfg(windows)]
+    return tauri::async_runtime::spawn_blocking(platform::hide).await.map_err(|e| e.to_string())?;
+    #[cfg(not(windows))]
+    Ok(())
+}
+
+#[tauri::command]
+pub fn claude_chat_visible() -> Result<bool, String> {
+    #[cfg(windows)]
+    return platform::visible();
+    #[cfg(not(windows))]
+    Ok(false)
+}
+
+#[tauri::command]
 pub async fn prepare_claude_chat(enabled: bool) -> Result<(), String> {
     #[cfg(windows)]
     return tauri::async_runtime::spawn_blocking(move || platform::prepare(enabled)).await.map_err(|e| e.to_string())?;

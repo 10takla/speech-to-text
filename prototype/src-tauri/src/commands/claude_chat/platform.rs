@@ -5,11 +5,11 @@ use std::{
     os::windows::process::CommandExt,
     path::PathBuf,
     process::{Child, Command},
-    sync::{Condvar, Mutex},
+    sync::{atomic::{AtomicU64, Ordering}, Condvar, Mutex},
     thread::sleep,
     time::{Duration, Instant},
 };
-use windows_sys::Win32::{Foundation::*, UI::WindowsAndMessaging::*};
+use windows_sys::Win32::{Foundation::*, System::Diagnostics::ToolHelp::*, UI::WindowsAndMessaging::*};
 
 struct ProcessJob(isize);
 impl Drop for ProcessJob { fn drop(&mut self) { unsafe { CloseHandle(self.0 as HANDLE); } } }
@@ -208,6 +208,71 @@ struct Session {
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 static BRIDGE_INFO: Mutex<Option<(u16, String)>> = Mutex::new(None);
+static CANCELLED_RUNS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static CANCEL_ALL: AtomicU64 = AtomicU64::new(0);
+const CANCELLED: &str = "Диктовка отменена";
+
+fn forget_cancel(run_id: &str) {
+    if let Ok(mut runs) = CANCELLED_RUNS.lock() { runs.retain(|id| id != run_id); }
+}
+
+fn process_family(parent: u32) -> Vec<u32> {
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE { return vec![parent]; }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of_val(&entry) as u32;
+        let mut ok = Process32FirstW(snapshot, &mut entry);
+        let mut entries = Vec::new();
+        while ok != 0 {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            ok = Process32NextW(snapshot, &mut entry);
+        }
+        CloseHandle(snapshot);
+        let mut family = vec![parent];
+        loop {
+            let previous = family.len();
+            for (pid, owner) in &entries {
+                if family.contains(owner) && !family.contains(pid) { family.push(*pid); }
+            }
+            if previous == family.len() { break; }
+        }
+        family
+    }
+}
+
+fn microphone_active_any(pids: Vec<u32>) -> Result<bool, String> {
+    std::thread::spawn(move || microphone_active_here(&pids))
+        .join()
+        .map_err(|_| "Проверка микрофона Claude Chat прервана".to_string())?
+}
+
+fn microphone_active_here(pids: &[u32]) -> Result<bool, String> {
+    use windows::{core::Interface, Win32::{Media::Audio::*, System::Com::*}};
+    unsafe {
+        let initialized = CoInitializeEx(None, COINIT_MULTITHREADED);
+        if initialized.is_err() { return Err("Не удалось проверить микрофон Claude Chat".into()); }
+        let result = (|| -> windows::core::Result<bool> {
+            let enumerator: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+            let devices = enumerator.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)?;
+            for index in 0..devices.GetCount()? {
+                let device = devices.Item(index)?;
+                let manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None)?;
+                let sessions = manager.GetSessionEnumerator()?;
+                for session_index in 0..sessions.GetCount()? {
+                    let control = sessions.GetSession(session_index)?;
+                    let control2: IAudioSessionControl2 = control.cast()?;
+                    if pids.contains(&control2.GetProcessId()?) && control.GetState()? == AudioSessionStateActive {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        })();
+        CoUninitialize();
+        result.map_err(|error| format!("Проверка микрофона: {error}"))
+    }
+}
 
 fn failure(label: &str) -> String { format!("{label}: {}", std::io::Error::last_os_error()) }
 
@@ -300,6 +365,9 @@ fn ensure(visible: bool) -> Result<(), String> {
                 "--mute-audio",
                 "--hide-crash-restore-bubble",
                 "--disable-session-crashed-bubble",
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
                 "https://claude.ai/new",
             ])
             .creation_flags(0x08000000) // CREATE_NO_WINDOW
@@ -339,6 +407,25 @@ fn ensure(visible: bool) -> Result<(), String> {
 
 pub fn open(visible: bool) -> Result<(), String> { ensure(visible) }
 
+pub fn hide() -> Result<(), String> {
+    let slot = SESSION.lock().map_err(|e| e.to_string())?;
+    if let Some(s) = slot.as_ref() {
+        if s.hwnd != 0 && unsafe { IsWindow(s.hwnd as HWND) != 0 } {
+            unsafe { ShowWindow(s.hwnd as HWND, SW_HIDE); }
+        }
+    }
+    Ok(())
+}
+
+pub fn visible() -> Result<bool, String> {
+    let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
+    Ok(slot.as_mut().is_some_and(|s| {
+        s.child.try_wait().ok().flatten().is_none()
+            && s.hwnd != 0
+            && unsafe { IsWindow(s.hwnd as HWND) != 0 && IsWindowVisible(s.hwnd as HWND) != 0 }
+    }))
+}
+
 pub fn prepare(enabled: bool) -> Result<(), String> {
     if enabled { return ensure(false); }
     let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
@@ -346,6 +433,10 @@ pub fn prepare(enabled: bool) -> Result<(), String> {
         log::info!("Claude Chat: closing background Edge");
         let _ = session.child.kill();
         let _ = session.child.wait();
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let profile = PathBuf::from(local).join("speech-to-text").join("claude-web");
+        kill_stale_profile_edge(&profile);
     }
     Ok(())
 }
@@ -358,12 +449,25 @@ pub fn running() -> Result<bool, String> {
 pub struct Poll { pub finished: bool, pub text: Option<String> }
 
 pub fn start(run_id: &str) -> Result<(), String> {
+    forget_cancel(run_id);
+    let epoch = CANCEL_ALL.load(Ordering::SeqCst);
+    let cancelled = || CANCEL_ALL.load(Ordering::SeqCst) != epoch
+        || CANCELLED_RUNS.lock().map(|runs| runs.iter().any(|id| id == run_id)).unwrap_or(false);
+    let result = start_dictation(run_id, &cancelled);
+    forget_cancel(run_id);
+    result
+}
+
+fn start_dictation(run_id: &str, cancelled: &dyn Fn() -> bool) -> Result<(), String> {
+    let begun = Instant::now();
     ensure(false)?;
-    {
+    if cancelled() { return Err(CANCELLED.into()); }
+    let edge_pid = {
         let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
         let s = slot.as_mut().ok_or("Сеанс Claude Chat не запущен")?;
         s.owner = Some(run_id.to_owned());
-    }
+        s.child.id()
+    };
     {
         let mut guard = BRIDGE.lock().map_err(|e| e.to_string())?;
         let state = guard.get_or_insert_with(BridgeState::default);
@@ -377,24 +481,80 @@ pub fn start(run_id: &str) -> Result<(), String> {
     {
         let mut guard = BRIDGE.lock().map_err(|e| e.to_string())?;
         while !guard.as_ref().is_some_and(|s| s.ready) {
+            if cancelled() {
+                drop(guard);
+                clear_owner(run_id);
+                return Err(CANCELLED.into());
+            }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                drop(guard);
+                clear_owner(run_id);
                 return Err("Расширение Claude Chat не подключилось. Откройте Claude Chat в настройках шага и проверьте страницу.".into());
             }
-            guard = BRIDGE_WAKE.wait_timeout(guard, left).map_err(|e| e.to_string())?.0;
+            guard = BRIDGE_WAKE.wait_timeout(guard, left.min(Duration::from_millis(100))).map_err(|e| e.to_string())?.0;
         }
     }
+    if cancelled() {
+        clear_owner(run_id);
+        return Err(CANCELLED.into());
+    }
     push_command("start");
-    let start_deadline = Instant::now() + Duration::from_secs(5);
-    let mut guard = BRIDGE.lock().map_err(|e| e.to_string())?;
-    loop {
-        if let Some(state) = guard.as_ref() {
-            if let Some(err) = &state.error { return Err(err.clone()); }
-            if state.started { return Ok(()); }
+    let start_deadline = Instant::now() + Duration::from_secs(6);
+    {
+        let mut guard = BRIDGE.lock().map_err(|e| e.to_string())?;
+        loop {
+            if cancelled() {
+                drop(guard);
+                clear_owner(run_id);
+                push_command("cancel");
+                return Err(CANCELLED.into());
+            }
+            if let Some(state) = guard.as_ref() {
+                if let Some(err) = &state.error {
+                    let msg = err.clone();
+                    drop(guard);
+                    clear_owner(run_id);
+                    return Err(msg);
+                }
+                if state.started { break; }
+            }
+            let left = start_deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                drop(guard);
+                clear_owner(run_id);
+                push_command("cancel");
+                return Err("Claude Chat не запустил голосовой ввод.".into());
+            }
+            guard = BRIDGE_WAKE.wait_timeout(guard, left.min(Duration::from_millis(100))).map_err(|e| e.to_string())?.0;
         }
-        let left = start_deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() { return Err("Claude Chat не запустил голосовой ввод.".into()); }
-        guard = BRIDGE_WAKE.wait_timeout(guard, left).map_err(|e| e.to_string())?.0;
+    }
+    // Wait until Edge's audio process actually opens the capture stream so the
+    // overlay only shows «recording» once Claude Chat is genuinely listening.
+    let ui_ready_ms = begun.elapsed().as_millis();
+    let mic_deadline = Instant::now() + Duration::from_secs(4);
+    while Instant::now() < mic_deadline {
+        if cancelled() {
+            clear_owner(run_id);
+            push_command("cancel");
+            return Err(CANCELLED.into());
+        }
+        let family = process_family(edge_pid);
+        if microphone_active_any(family).unwrap_or(false) {
+            log::info!("Claude Chat recording started: UI ready in {ui_ready_ms} ms, mic active at {} ms", begun.elapsed().as_millis());
+            return Ok(());
+        }
+        sleep(Duration::from_millis(30));
+    }
+    log::warn!("Claude Chat: UI started in {ui_ready_ms} ms, but Edge audio capture session was not observed within 4 s; continuing");
+    Ok(())
+}
+
+fn clear_owner(run_id: &str) {
+    if let Ok(mut slot) = SESSION.lock() {
+        if let Some(s) = slot.as_mut() {
+            if s.owner.as_deref() == Some(run_id) { s.owner = None; }
+        }
     }
 }
 
@@ -429,6 +589,12 @@ pub fn stop(run_id: &str, tail: Duration, _first_word: Duration) -> Result<Strin
             return Err("Диктовка отменена".into());
         }
     }
+    {
+        let mut guard = BRIDGE.lock().map_err(|e| e.to_string())?;
+        let state = guard.get_or_insert_with(BridgeState::default);
+        state.final_text = None;
+        state.error = None;
+    }
     push_command("stop");
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut guard = BRIDGE.lock().map_err(|e| e.to_string())?;
@@ -455,6 +621,11 @@ pub fn stop(run_id: &str, tail: Duration, _first_word: Duration) -> Result<Strin
 }
 
 pub fn cancel(run_id: Option<&str>) -> Result<(), String> {
+    match run_id {
+        Some(run_id) => if let Ok(mut runs) = CANCELLED_RUNS.lock() { runs.push(run_id.to_owned()); },
+        None => { CANCEL_ALL.fetch_add(1, Ordering::SeqCst); }
+    }
+    BRIDGE_WAKE.notify_all();
     let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
     if let Some(s) = slot.as_mut() {
         if run_id.is_none() || s.owner.as_deref() == run_id {

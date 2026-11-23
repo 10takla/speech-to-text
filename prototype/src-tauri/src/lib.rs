@@ -12,12 +12,12 @@ mod android_runtime;
 
 #[cfg(desktop)]
 pub use crate::commands::{
-    open_claude_code,
+    open_claude_code, hide_claude_code, claude_code_visible,
     cancel_claude_code, claude_code_running,
     start_claude_dictation, stop_claude_dictation, poll_claude_dictation, prepare_claude_code,
-    open_claude_chat, prepare_claude_chat, claude_chat_running,
+    open_claude_chat, hide_claude_chat, claude_chat_visible, prepare_claude_chat, claude_chat_running,
     start_claude_chat_dictation, stop_claude_chat_dictation, poll_claude_chat_dictation, cancel_claude_chat,
-    open_antigravity_cli,
+    open_antigravity_cli, hide_antigravity_cli, antigravity_cli_visible,
     cancel_antigravity_cli, antigravity_cli_running,
     start_antigravity_dictation, stop_antigravity_dictation, poll_antigravity_dictation, prepare_antigravity_cli,
     save_recording_file,
@@ -161,12 +161,12 @@ pub fn run() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
-            open_claude_code,
+            open_claude_code, hide_claude_code, claude_code_visible,
             cancel_claude_code, claude_code_running,
             start_claude_dictation, stop_claude_dictation, poll_claude_dictation, prepare_claude_code,
-            open_claude_chat, prepare_claude_chat, claude_chat_running,
-    start_claude_chat_dictation, stop_claude_chat_dictation, poll_claude_chat_dictation, cancel_claude_chat,
-            open_antigravity_cli,
+            open_claude_chat, hide_claude_chat, claude_chat_visible, prepare_claude_chat, claude_chat_running,
+            start_claude_chat_dictation, stop_claude_chat_dictation, poll_claude_chat_dictation, cancel_claude_chat,
+            open_antigravity_cli, hide_antigravity_cli, antigravity_cli_visible,
             cancel_antigravity_cli, antigravity_cli_running,
             start_antigravity_dictation, stop_antigravity_dictation, poll_antigravity_dictation, prepare_antigravity_cli,
             save_recording_file,

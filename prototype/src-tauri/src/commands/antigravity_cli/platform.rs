@@ -545,6 +545,23 @@ pub fn prepare(enabled: bool) -> Result<(), String> {
 
 pub fn open(visible: bool) -> Result<(), String> { ensure(&mut *lock(MAIN)?, visible).map(|_| ()) }
 
+pub fn hide() -> Result<(), String> {
+    if let Some(s) = lock(MAIN)?.as_ref() {
+        if s.hwnd != 0 && unsafe { IsWindow(s.hwnd as HWND) != 0 } {
+            unsafe { ShowWindow(s.hwnd as HWND, SW_HIDE); }
+        }
+    }
+    Ok(())
+}
+
+pub fn visible() -> Result<bool, String> {
+    Ok(lock(MAIN)?.as_mut().is_some_and(|s| {
+        s.child.try_wait().ok().flatten().is_none()
+            && s.hwnd != 0
+            && unsafe { IsWindow(s.hwnd as HWND) != 0 && IsWindowVisible(s.hwnd as HWND) != 0 }
+    }))
+}
+
 pub fn running() -> Result<bool, String> {
     for index in 0..CONSOLES {
         if lock(index)?.as_ref().is_some_and(|s| unsafe { IsWindow(s.hwnd as HWND) != 0 }) { return Ok(true); }

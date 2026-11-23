@@ -80,7 +80,6 @@
     const cancelBtn = buttons.find((btn) => /отменить диктовку|cancel.*(dictat|voice|record)|discard/i.test(buttonLabel(btn)));
     if (cancelBtn) {
       const idx = buttons.indexOf(cancelBtn);
-      // Confirm button is placed right next to Cancel dictation inside the composer.
       const next = buttons[idx + 1];
       if (next && !/attach|добавить/i.test(buttonLabel(next))) return next;
     }
@@ -89,6 +88,10 @@
       if (/cancel|discard|отмен|attach|добавить|voice-mode|голосовой режим/.test(label)) return false;
       return /завершить диктовку|stop.*(dictat|voice|record)|confirm|done|finish|insert|accept|complete|останов|подтверд|встав|принять/.test(label);
     });
+  }
+
+  function isDictatingUi() {
+    return Boolean(findCancelButton() || findConfirmStopButton());
   }
 
   function cleanup() {
@@ -100,51 +103,80 @@
     timeoutId = null;
   }
 
+  function clickStartAndConfirm(startBtn) {
+    const el = findInput();
+    if (el) clearInput(el);
+    const clickedAt = Date.now();
+    post({ event: 'debug', message: `start: clicking ${JSON.stringify(buttonLabel(startBtn))}` });
+    startBtn.click();
+
+    const confirmStarted = () => {
+      if (!isDictatingUi()) return false;
+      cleanup();
+      active = true;
+      post({ event: 'debug', message: `start: dictation UI active after ${Date.now() - clickedAt}ms` });
+      post({ event: 'started' });
+      return true;
+    };
+
+    if (confirmStarted()) return;
+    cleanup();
+    observer = new MutationObserver(() => { confirmStarted(); });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+    timeoutId = setTimeout(() => {
+      cleanup();
+      const labels = visibleButtonsIn(findComposerRoot()).map(buttonLabel).filter(Boolean);
+      post({ event: 'debug', message: `start: dictation UI did not appear in 5s; buttons=${JSON.stringify(labels)}` });
+      post({ event: 'error', error: 'Claude Chat не перешёл в режим диктовки. Проверьте доступ к микрофону на странице.' });
+    }, 5000);
+  }
+
   function handleStart() {
     cleanup();
     const cancelBtn = findCancelButton();
     if (cancelBtn) {
       post({ event: 'debug', message: 'start: cancelling leftover dictation before starting' });
       cancelBtn.click();
-      let tries = 0;
-      const waitReady = () => {
+      const waitForStart = () => {
         const startBtn = findStartButton();
-        if (startBtn) {
-          const el = findInput();
-          if (el) clearInput(el);
-          post({ event: 'debug', message: `start: clicking ${JSON.stringify(buttonLabel(startBtn))}` });
-          active = true;
-          startBtn.click();
-          post({ event: 'started' });
-          return;
-        }
-        if (++tries < 20) setTimeout(waitReady, 50);
-        else post({ event: 'error', error: 'Не удалось сбросить предыдущую диктовку на странице Claude Chat.' });
+        if (!startBtn || findCancelButton()) return false;
+        cleanup();
+        clickStartAndConfirm(startBtn);
+        return true;
       };
-      setTimeout(waitReady, 50);
+      if (waitForStart()) return;
+      observer = new MutationObserver(() => { waitForStart(); });
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+      timeoutId = setTimeout(() => {
+        cleanup();
+        post({ event: 'error', error: 'Не удалось сбросить предыдущую диктовку на странице Claude Chat.' });
+      }, 3000);
       return;
     }
-    const el = findInput();
-    if (el) clearInput(el);
     const btn = findStartButton();
     if (!btn) {
+      const el = findInput();
       const labels = visibleButtonsIn(findComposerRoot()).map(buttonLabel).filter(Boolean);
       post({ event: 'debug', message: `start: mic button not found; composer buttons=${JSON.stringify(labels)}` });
       post({ event: 'error', error: el ? 'Не найдена кнопка голосового ввода на странице Claude Chat.' : 'Не найдено поле ввода на странице Claude Chat. Войдите в аккаунт.' });
       return;
     }
-    post({ event: 'debug', message: `start: clicking ${JSON.stringify(buttonLabel(btn))}` });
-    active = true;
-    btn.click();
-    post({ event: 'started' });
+    clickStartAndConfirm(btn);
   }
 
   function handleStop() {
-    if (!active) return;
     const composer = findComposerRoot();
     const labels = visibleButtonsIn(composer).map(buttonLabel).filter(Boolean);
     const btn = findConfirmStopButton();
-    post({ event: 'debug', message: `stop: clicked=${btn ? JSON.stringify(buttonLabel(btn)) : 'none'}, composer buttons=${JSON.stringify(labels)}` });
+    post({ event: 'debug', message: `stop: active=${active}, clicked=${btn ? JSON.stringify(buttonLabel(btn)) : 'none'}, composer buttons=${JSON.stringify(labels)}` });
+
+    if (!active && !btn) {
+      cleanup();
+      const text = readText(findInput());
+      post({ event: 'stopped', text });
+      return;
+    }
+
     if (btn) btn.click();
 
     const stoppedAt = Date.now();
@@ -182,14 +214,11 @@
   }
 
   function handleCancel() {
-    const wasActive = active;
     active = false;
     cleanup();
-    if (wasActive) {
-      const btn = findCancelButton();
-      post({ event: 'debug', message: `cancel: clicked=${btn ? JSON.stringify(buttonLabel(btn)) : 'none'}` });
-      if (btn) btn.click();
-    }
+    const btn = findCancelButton();
+    post({ event: 'debug', message: `cancel: clicked=${btn ? JSON.stringify(buttonLabel(btn)) : 'none'}` });
+    if (btn) btn.click();
     clearInput(findInput());
   }
 
