@@ -3,8 +3,22 @@
   let observer = null;
   let timeoutId = null;
 
+  function clog(...args) {
+    console.log('[claude-chat-content]', ...args);
+  }
+  function cerr(...args) {
+    console.error('[claude-chat-content]', ...args);
+  }
+
   function post(payload) {
-    try { chrome.runtime.sendMessage(payload); } catch {}
+    if (payload && payload.event === 'error') cerr(payload.error);
+    try {
+      void chrome.runtime.sendMessage(payload).catch((err) => {
+        cerr('post sendMessage failed:', payload?.event, err && err.message ? err.message : String(err));
+      });
+    } catch (err) {
+      cerr('post sync error:', err && err.message ? err.message : String(err));
+    }
   }
 
   function findInput() {
@@ -222,41 +236,48 @@
     clearInput(findInput());
   }
 
-  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    try {
-      const cmd = msg && msg.cmd;
-      if (cmd === 'start') handleStart();
-      else if (cmd === 'stop') handleStop();
-      else if (cmd === 'cancel') handleCancel();
-      sendResponse({ ok: true });
-    } catch (err) {
-      post({ event: 'error', error: `Ошибка скрипта: ${err && err.message ? err.message : String(err)}` });
-      sendResponse({ ok: false });
-    }
-  });
-
-  function startKeepalive() {
-    let port = null;
-    let pingTimer = null;
-    const reconnect = () => {
-      clearInterval(pingTimer);
-      try {
-        port = chrome.runtime.connect({ name: 'keepalive' });
-        port.onDisconnect.addListener(() => {
-          clearInterval(pingTimer);
-          setTimeout(reconnect, 1000);
-        });
-        pingTimer = setInterval(() => {
-          try { port.postMessage({ type: 'ping' }); } catch {}
-        }, 20000);
-      } catch {
-        setTimeout(reconnect, 2000);
+  async function pollLoop() {
+    clog('pollLoop started on', location.href);
+    post({ event: 'debug', message: `content: loaded on ${location.href}` });
+    let lastErr = '';
+    let lastErrAt = 0;
+    const reportPollErr = (label, msg) => {
+      const now = Date.now();
+      if (msg !== lastErr || now - lastErrAt >= 10000) {
+        lastErr = msg;
+        lastErrAt = now;
+        cerr(label, msg);
       }
     };
-    reconnect();
+    while (true) {
+      try {
+        const res = await chrome.runtime.sendMessage({ type: 'poll' });
+        if (res && typeof res.cmd === 'string') {
+          lastErr = '';
+          clog('received cmd:', res.cmd);
+          try {
+            if (res.cmd === 'start') handleStart();
+            else if (res.cmd === 'stop') handleStop();
+            else if (res.cmd === 'cancel') handleCancel();
+          } catch (err) {
+            cerr('cmd handler error:', res.cmd, err);
+            post({ event: 'error', error: `Ошибка скрипта: ${err && err.message ? err.message : String(err)}` });
+          }
+        } else if (!res || res.error) {
+          const lastRtErr = chrome.runtime?.lastError?.message;
+          const msg = res ? String(res.error) : (lastRtErr ? `empty response (${lastRtErr})` : 'empty response');
+          reportPollErr('poll error:', msg);
+          await new Promise((r) => setTimeout(r, 500));
+        } else {
+          lastErr = '';
+        }
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        reportPollErr('poll exception:', msg);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
   }
 
-  startKeepalive();
-  post({ event: 'debug', message: `content: loaded on ${location.href}` });
-  post({ event: 'ready' });
+  void pollLoop();
 })();

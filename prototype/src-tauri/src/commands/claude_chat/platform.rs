@@ -37,26 +37,32 @@ impl ProcessJob {
 }
 
 struct BridgeState {
-    ready: bool,
+    active_polls: usize,
+    last_poll: Option<Instant>,
     started: bool,
     live_text: String,
     final_text: Option<String>,
     error: Option<String>,
     commands: VecDeque<&'static str>,
-    sse_epoch: u64,
 }
 
 impl Default for BridgeState {
     fn default() -> Self {
         Self {
-            ready: false,
+            active_polls: 0,
+            last_poll: None,
             started: false,
             live_text: String::new(),
             final_text: None,
             error: None,
             commands: VecDeque::new(),
-            sse_epoch: 0,
         }
+    }
+}
+
+impl BridgeState {
+    fn is_ready(&self) -> bool {
+        self.active_polls > 0 || self.last_poll.is_some_and(|t| t.elapsed() < Duration::from_secs(25))
     }
 }
 
@@ -79,13 +85,13 @@ fn start_bridge_server() -> Result<(u16, String), String> {
     let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
     hasher.write_u128(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
     let token = format!("{:016x}{:016x}", hasher.finish(), std::collections::hash_map::RandomState::new().build_hasher().finish());
-    let events_path = format!("/{token}/events");
+    let poll_path = format!("/{token}/poll");
     let state_path = format!("/{token}/state");
 
     std::thread::Builder::new().name("claude-chat-bridge".into()).spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
-            let events_path = events_path.clone();
+            let poll_path = poll_path.clone();
             let state_path = state_path.clone();
             std::thread::spawn(move || {
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
@@ -109,47 +115,47 @@ fn start_bridge_server() -> Result<(u16, String), String> {
                     return;
                 }
 
-                if method == "GET" && path == events_path {
-                    let my_epoch = {
+                if method == "GET" && path == poll_path {
+                    let cmd = {
                         let Ok(mut guard) = BRIDGE.lock() else { return };
                         let state = guard.get_or_insert_with(BridgeState::default);
-                        state.sse_epoch += 1;
-                        let epoch = state.sse_epoch;
+                        let was_ready = state.is_ready();
+                        state.active_polls += 1;
+                        state.last_poll = Some(Instant::now());
+                        if !was_ready {
+                            log::info!("Claude Chat bridge connected (content long-poll active)");
+                        }
                         BRIDGE_WAKE.notify_all();
-                        epoch
-                    };
-                    if stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\nConnection: keep-alive\r\n\r\n").is_err()
-                        || stream.flush().is_err()
-                    {
-                        return;
-                    }
-                    loop {
-                        let cmd = {
-                            let Ok(mut guard) = BRIDGE.lock() else { return };
-                            loop {
-                                let state = guard.get_or_insert_with(BridgeState::default);
-                                if state.sse_epoch != my_epoch { return; }
-                                if let Some(cmd) = state.commands.pop_front() { break cmd; }
-                                let (next, _) = match BRIDGE_WAKE.wait_timeout(guard, Duration::from_secs(10)) {
-                                    Ok(res) => res,
-                                    Err(_) => return,
-                                };
-                                guard = next;
-                                if guard.as_ref().is_some_and(|s| s.sse_epoch != my_epoch) { return; }
-                                if guard.as_ref().is_some_and(|s| s.commands.is_empty()) {
-                                    if stream.write_all(b": ping\n\n").is_err() || stream.flush().is_err() { return; }
-                                }
-                            }
+                        let deadline = Instant::now() + Duration::from_secs(20);
+                        let cmd = loop {
+                            let state = guard.get_or_insert_with(BridgeState::default);
+                            if let Some(cmd) = state.commands.pop_front() { break Some(cmd); }
+                            let left = deadline.saturating_duration_since(Instant::now());
+                            if left.is_zero() { break None; }
+                            guard = match BRIDGE_WAKE.wait_timeout(guard, left) {
+                                Ok((next, _)) => next,
+                                Err(_) => return,
+                            };
                         };
-                        if stream.write_all(format!("data: {cmd}\n\n").as_bytes()).is_err() || stream.flush().is_err() {
-                            // Put command back so a freshly connected SSE stream can deliver it.
+                        if let Some(state) = guard.as_mut() {
+                            state.active_polls = state.active_polls.saturating_sub(1);
+                            state.last_poll = Some(Instant::now());
+                        }
+                        cmd
+                    };
+                    let body = match cmd {
+                        Some(c) => format!("{{\"cmd\":\"{c}\"}}"),
+                        None => "{\"cmd\":null}".to_owned(),
+                    };
+                    let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                    if stream.write_all(resp.as_bytes()).is_err() || stream.flush().is_err() {
+                        if let Some(c) = cmd {
                             if let Ok(mut guard) = BRIDGE.lock() {
                                 if let Some(state) = guard.as_mut() {
-                                    state.commands.push_front(cmd);
+                                    state.commands.push_front(c);
                                     BRIDGE_WAKE.notify_all();
                                 }
                             }
-                            return;
                         }
                     }
                 } else if method == "POST" && path == state_path {
@@ -157,11 +163,13 @@ fn start_bridge_server() -> Result<(u16, String), String> {
                     if reader.read_exact(&mut body).is_ok() {
                         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body) {
                             let event = json.get("event").and_then(|v| v.as_str()).unwrap_or("");
-                            log::info!("Claude Chat bridge event: {event}");
+                            if event != "debug" && event != "error" {
+                                log::info!("Claude Chat bridge event: {event}");
+                            }
                             if let Ok(mut guard) = BRIDGE.lock() {
                                 let state = guard.get_or_insert_with(BridgeState::default);
                                 match event {
-                                    "ready" => state.ready = true,
+                                    "ready" => state.last_poll = Some(Instant::now()),
                                     "started" => state.started = true,
                                     "live" => {
                                         if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
@@ -190,6 +198,19 @@ fn start_bridge_server() -> Result<(u16, String), String> {
                     }
                     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
                 } else {
+                    static LAST_UNEXPECTED: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+                    let key = format!("{method} {path}");
+                    let should_log = LAST_UNEXPECTED
+                        .lock()
+                        .map(|mut slot| {
+                            let stale = slot.as_ref().is_none_or(|(prev, at)| prev != &key || at.elapsed() >= Duration::from_secs(10));
+                            if stale { *slot = Some((key.clone(), Instant::now())); }
+                            stale
+                        })
+                        .unwrap_or(false);
+                    if should_log {
+                        log::warn!("Claude Chat bridge unexpected request: {key}");
+                    }
                     let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
                 }
             });
@@ -305,16 +326,73 @@ unsafe extern "system" fn find_edge_window(hwnd: HWND, pointer: LPARAM) -> i32 {
     1
 }
 
-fn prepare_extension_dir(port: u16, token: &str) -> Result<PathBuf, String> {
+fn extension_content_hash(manifest: &str, background: &str, content: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for chunk in [manifest.as_bytes(), b"\0", background.as_bytes(), b"\0", content.as_bytes()] {
+        for &b in chunk {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    }
+    h
+}
+
+fn prepare_extension_dir(port: u16, token: &str, profile: &std::path::Path) -> Result<PathBuf, String> {
     let ext_dir = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("Не найден LOCALAPPDATA")?)
         .join("speech-to-text")
         .join("claude-web-ext");
     std::fs::create_dir_all(&ext_dir).map_err(|e| e.to_string())?;
-    std::fs::write(ext_dir.join("manifest.json"), include_str!("extension/manifest.json")).map_err(|e| e.to_string())?;
-    std::fs::write(ext_dir.join("background.js"), include_str!("extension/background.js")).map_err(|e| e.to_string())?;
-    std::fs::write(ext_dir.join("content.js"), include_str!("extension/content.js")).map_err(|e| e.to_string())?;
+
+    let manifest_tpl = include_str!("extension/manifest.json");
+    let background_js = include_str!("extension/background.js");
+    let content_js = include_str!("extension/content.js");
+    let hash = extension_content_hash(manifest_tpl, background_js, content_js);
+
+    let state_path = ext_dir.join(".ext-version");
+    let (prev_seq, prev_hash) = std::fs::read_to_string(&state_path)
+        .ok()
+        .and_then(|s| {
+            let mut parts = s.split_whitespace();
+            let seq = parts.next()?.parse::<u32>().ok()?;
+            let h = u64::from_str_radix(parts.next()?, 16).ok()?;
+            Some((seq, h))
+        })
+        .unwrap_or((0, 0));
+    let expected_sw = format!("bg-{prev_seq}.js");
+    let changed = prev_seq == 0 || prev_hash != hash || !ext_dir.join(&expected_sw).is_file();
+    let seq = if changed { prev_seq.saturating_add(1) } else { prev_seq };
+    let version = format!("1.{}.{}", seq / 65535, seq % 65535);
+    let sw_name = format!("bg-{seq}.js");
+    let manifest = manifest_tpl
+        .replace("\"version\": \"1.0.0\"", &format!("\"version\": \"{version}\""))
+        .replace("\"service_worker\": \"background.js\"", &format!("\"service_worker\": \"{sw_name}\""));
+
+    if changed {
+        if let Ok(entries) = std::fs::read_dir(&ext_dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name == "background.js" || (name.starts_with("bg-") && name.ends_with(".js")) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let sw_cache = profile.join("Default").join("Service Worker");
+        if sw_cache.exists() {
+            match std::fs::remove_dir_all(&sw_cache) {
+                Ok(()) => log::info!("Claude Chat cleared Edge Service Worker cache: {}", sw_cache.display()),
+                Err(e) => log::warn!("Claude Chat failed to clear Service Worker cache {}: {e}", sw_cache.display()),
+            }
+        }
+    }
+
+    std::fs::write(ext_dir.join("manifest.json"), manifest).map_err(|e| e.to_string())?;
+    std::fs::write(ext_dir.join(&sw_name), background_js).map_err(|e| e.to_string())?;
+    std::fs::write(ext_dir.join("content.js"), content_js).map_err(|e| e.to_string())?;
     std::fs::write(ext_dir.join("config.json"), format!("{{\"bridgeUrl\":\"http://127.0.0.1:{port}/{token}\"}}\n")).map_err(|e| e.to_string())?;
+    let _ = std::fs::write(&state_path, format!("{seq} {hash:016x}\n"));
     let _ = std::fs::remove_file(ext_dir.join("config.js"));
+    log::info!("Claude Chat extension prepared (version={version}, sw={sw_name}, changed={changed})");
     Ok(ext_dir)
 }
 
@@ -329,6 +407,84 @@ fn kill_stale_profile_edge(profile: &std::path::Path) {
         .status();
 }
 
+fn is_interesting_edge_log_line(line: &str) -> bool {
+    if line.contains("devtools://")
+        || line.contains("AddComponentExtension")
+        || line.contains("Permissions-Policy header")
+        || line.contains("[DatadogRUM]")
+        || line.contains("fallback_task_provider.cc")
+        || line.contains("external_registry_loader_win.cc")
+        || line.contains("extension_garbage_collector.cc")
+        || line.contains("ScriptProcessorNode is deprecated")
+    {
+        return false;
+    }
+    line.contains("[claude-chat")
+        || line.contains("CONSOLE:")
+        || line.contains("CONSOLE(")
+        || line.contains("extension")
+        || line.contains("Extension")
+        || line.contains("service_worker")
+        || line.contains("ServiceWorker")
+        || line.contains("ERROR:")
+        || line.contains("FATAL:")
+}
+
+fn edge_log_path() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|base| PathBuf::from(base).join("speech-to-text").join("claude-web").join("edge.log"))
+}
+
+fn log_recent_edge_log_tail() {
+    let Some(path) = edge_log_path() else { return; };
+    let Ok(mut file) = std::fs::File::open(&path) else {
+        log::warn!("Claude Chat Edge log snapshot: cannot open {}", path.display());
+        return;
+    };
+    let mut raw = Vec::new();
+    if file.read_to_end(&mut raw).is_err() { return; }
+    let text = String::from_utf8_lossy(&raw);
+    let matches: Vec<&str> = text.lines().filter(|l| is_interesting_edge_log_line(l)).collect();
+    let start = matches.len().saturating_sub(15);
+    log::info!("Claude Chat Edge log snapshot ({} matched lines in {}, showing last {}):",
+        matches.len(), path.display(), matches.len() - start);
+    for line in &matches[start..] {
+        log::info!("Claude Chat Edge log (snapshot): {line}");
+    }
+}
+
+fn start_edge_log_tailer(log_path: PathBuf, stop_epoch: u64) {
+    std::thread::Builder::new().name("claude-chat-edge-log".into()).spawn(move || {
+        use std::io::{Seek, SeekFrom};
+        let mut offset = 0u64;
+        loop {
+            if EDGE_LOG_EPOCH.load(Ordering::SeqCst) != stop_epoch { return; }
+            if let Ok(mut file) = std::fs::File::open(&log_path) {
+                let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+                if len < offset { offset = 0; }
+                if len > offset && file.seek(SeekFrom::Start(offset)).is_ok() {
+                    let mut raw = Vec::new();
+                    if file.read_to_end(&mut raw).is_ok() && !raw.is_empty() {
+                        if let Some(last_nl) = raw.iter().rposition(|&b| b == b'\n') {
+                            let complete = &raw[..=last_nl];
+                            offset += complete.len() as u64;
+                            let text = String::from_utf8_lossy(complete);
+                            for line in text.lines() {
+                                if is_interesting_edge_log_line(line) {
+                                    log::info!("Claude Chat Edge log: {line}");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            sleep(Duration::from_millis(400));
+        }
+    }).ok();
+}
+
+static EDGE_LOG_EPOCH: AtomicU64 = AtomicU64::new(0);
+
 fn ensure(visible: bool) -> Result<(), String> {
     let mut slot = SESSION.lock().map_err(|e| e.to_string())?;
     let alive = slot.as_mut().is_some_and(|s| s.child.try_wait().ok().flatten().is_none() && unsafe { IsWindow(s.hwnd as HWND) != 0 });
@@ -339,7 +495,6 @@ fn ensure(visible: bool) -> Result<(), String> {
             if info.is_none() { *info = Some(start_bridge_server()?); }
             info.clone().unwrap()
         };
-        let ext_dir = prepare_extension_dir(port, &token)?;
         let exe = edge_exe()?;
         let profile = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("Не найден LOCALAPPDATA")?)
             .join("speech-to-text")
@@ -348,17 +503,29 @@ fn ensure(visible: bool) -> Result<(), String> {
         // Terminate any orphaned Edge left over from a previous app instance using our isolated profile,
         // so the new Edge starts cleanly with the fresh extension config and does not delegate to a stale process.
         kill_stale_profile_edge(&profile);
+        let ext_dir = prepare_extension_dir(port, &token, &profile)?;
         if let Ok(mut guard) = BRIDGE.lock() {
             if let Some(state) = guard.as_mut() {
-                state.ready = false;
+                state.active_polls = 0;
+                state.last_poll = None;
                 state.commands.clear();
             }
         }
+        let edge_log = profile.join("edge.log");
+        let _ = std::fs::remove_file(&edge_log);
+        let log_epoch = EDGE_LOG_EPOCH.fetch_add(1, Ordering::SeqCst) + 1;
+        start_edge_log_tailer(edge_log.clone(), log_epoch);
+        log::info!("Claude Chat launching Edge: exe={}, profile={}, ext={}, log={}",
+            exe.display(), profile.display(), ext_dir.display(), edge_log.display());
         let job = ProcessJob::create()?;
         let child = Command::new(&exe)
             .args([
                 &format!("--user-data-dir={}", profile.display()),
                 &format!("--load-extension={}", ext_dir.display()),
+                "--enable-logging",
+                &format!("--log-file={}", edge_log.display()),
+                "--v=0",
+                "--vmodule=*service_worker*=1,*extension*=1",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-sync",
@@ -368,6 +535,7 @@ fn ensure(visible: bool) -> Result<(), String> {
                 "--disable-background-timer-throttling",
                 "--disable-backgrounding-occluded-windows",
                 "--disable-renderer-backgrounding",
+                "--disable-features=msEdgeSleepingTabs,IntensiveWakeUpThrottling,CalculateNativeWinOcclusion",
                 "https://claude.ai/new",
             ])
             .creation_flags(0x08000000) // CREATE_NO_WINDOW
@@ -477,10 +645,11 @@ fn start_dictation(run_id: &str, cancelled: &dyn Fn() -> bool) -> Result<(), Str
         state.error = None;
         state.commands.clear();
     }
+    log::info!("Claude Chat start(run_id={run_id}): waiting for bridge ready");
     let deadline = Instant::now() + Duration::from_secs(10);
     {
         let mut guard = BRIDGE.lock().map_err(|e| e.to_string())?;
-        while !guard.as_ref().is_some_and(|s| s.ready) {
+        while !guard.as_ref().is_some_and(|s| s.is_ready()) {
             if cancelled() {
                 drop(guard);
                 clear_owner(run_id);
@@ -488,13 +657,18 @@ fn start_dictation(run_id: &str, cancelled: &dyn Fn() -> bool) -> Result<(), Str
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                let polls = guard.as_ref().map(|s| s.active_polls).unwrap_or(0);
+                let last = guard.as_ref().and_then(|s| s.last_poll).map(|t| t.elapsed().as_millis());
+                log::warn!("Claude Chat start timeout: bridge not ready after 10s (active_polls={polls}, last_poll_ms={last:?})");
                 drop(guard);
+                log_recent_edge_log_tail();
                 clear_owner(run_id);
                 return Err("Расширение Claude Chat не подключилось. Откройте Claude Chat в настройках шага и проверьте страницу.".into());
             }
             guard = BRIDGE_WAKE.wait_timeout(guard, left.min(Duration::from_millis(100))).map_err(|e| e.to_string())?.0;
         }
     }
+    log::info!("Claude Chat start(run_id={run_id}): bridge ready, pushing start command");
     if cancelled() {
         clear_owner(run_id);
         return Err(CANCELLED.into());
@@ -521,9 +695,11 @@ fn start_dictation(run_id: &str, cancelled: &dyn Fn() -> bool) -> Result<(), Str
             }
             let left = start_deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                if let Some(state) = guard.as_mut() { state.commands.clear(); }
                 drop(guard);
+                log::warn!("Claude Chat start timeout: dictation UI did not start within 6s");
+                log_recent_edge_log_tail();
                 clear_owner(run_id);
-                push_command("cancel");
                 return Err("Claude Chat не запустил голосовой ввод.".into());
             }
             guard = BRIDGE_WAKE.wait_timeout(guard, left.min(Duration::from_millis(100))).map_err(|e| e.to_string())?.0;
