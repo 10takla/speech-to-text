@@ -326,9 +326,9 @@ unsafe extern "system" fn find_edge_window(hwnd: HWND, pointer: LPARAM) -> i32 {
     1
 }
 
-fn extension_content_hash(manifest: &str, background: &str, content: &str) -> u64 {
+fn extension_content_hash(manifest: &str, background: &str, content: &str, ws_hook: &str) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325;
-    for chunk in [manifest.as_bytes(), b"\0", background.as_bytes(), b"\0", content.as_bytes()] {
+    for chunk in [manifest.as_bytes(), b"\0", background.as_bytes(), b"\0", content.as_bytes(), b"\0", ws_hook.as_bytes()] {
         for &b in chunk {
             h ^= b as u64;
             h = h.wrapping_mul(0x100000001b3);
@@ -346,7 +346,8 @@ fn prepare_extension_dir(port: u16, token: &str, profile: &std::path::Path) -> R
     let manifest_tpl = include_str!("extension/manifest.json");
     let background_js = include_str!("extension/background.js");
     let content_js = include_str!("extension/content.js");
-    let hash = extension_content_hash(manifest_tpl, background_js, content_js);
+    let ws_hook_js = include_str!("extension/ws-hook.js");
+    let hash = extension_content_hash(manifest_tpl, background_js, content_js, ws_hook_js);
 
     let state_path = ext_dir.join(".ext-version");
     let (prev_seq, prev_hash) = std::fs::read_to_string(&state_path)
@@ -389,6 +390,7 @@ fn prepare_extension_dir(port: u16, token: &str, profile: &std::path::Path) -> R
     std::fs::write(ext_dir.join("manifest.json"), manifest).map_err(|e| e.to_string())?;
     std::fs::write(ext_dir.join(&sw_name), background_js).map_err(|e| e.to_string())?;
     std::fs::write(ext_dir.join("content.js"), content_js).map_err(|e| e.to_string())?;
+    std::fs::write(ext_dir.join("ws-hook.js"), ws_hook_js).map_err(|e| e.to_string())?;
     std::fs::write(ext_dir.join("config.json"), format!("{{\"bridgeUrl\":\"http://127.0.0.1:{port}/{token}\"}}\n")).map_err(|e| e.to_string())?;
     let _ = std::fs::write(&state_path, format!("{seq} {hash:016x}\n"));
     let _ = std::fs::remove_file(ext_dir.join("config.js"));
@@ -409,6 +411,8 @@ fn kill_stale_profile_edge(profile: &std::path::Path) {
 
 fn is_interesting_edge_log_line(line: &str) -> bool {
     if line.contains("devtools://")
+        || line.contains("ntp.msn.com")
+        || line.contains("assets.msn.com")
         || line.contains("AddComponentExtension")
         || line.contains("Permissions-Policy header")
         || line.contains("[DatadogRUM]")

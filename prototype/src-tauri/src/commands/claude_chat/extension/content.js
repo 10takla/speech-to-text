@@ -2,6 +2,27 @@
   let active = false;
   let observer = null;
   let timeoutId = null;
+  let lastStopAt = 0;
+  let activeWsId = 0;
+  let activeWsOpen = false;
+  let onStopWsEvent = null;
+
+  window.addEventListener('__stt_ws_event', (ev) => {
+    const d = ev?.detail;
+    if (!d) return;
+    if (d.kind === 'open') {
+      activeWsId = d.id;
+      activeWsOpen = true;
+    } else if (d.kind === 'close' && d.id === activeWsId) {
+      activeWsOpen = false;
+    }
+    const sinceStop = lastStopAt && Date.now() - lastStopAt < 10000 ? ` (stop +${Date.now() - lastStopAt}ms)` : '';
+    if (d.kind === 'open' || d.kind === 'close' || d.kind === 'error' || (d.kind === 'msg' && d.msgType === 'TranscriptEndpoint')) {
+      const extra = d.msgType ? ` ${d.msgType}` : (d.kind === 'close' ? ` code=${d.code} clean=${d.clean}` : '');
+      post({ event: 'debug', message: `ws#${d.id} ${d.kind}${sinceStop}${extra}` });
+    }
+    if (onStopWsEvent) onStopWsEvent(d);
+  });
 
   function clog(...args) {
     console.log('[claude-chat-content]', ...args);
@@ -115,11 +136,26 @@
     }
     clearTimeout(timeoutId);
     timeoutId = null;
+    onStopWsEvent = null;
+  }
+
+  function previewText(text) {
+    return JSON.stringify(text.length > 100 ? `${text.slice(0, 100)}…` : text);
   }
 
   function clickStartAndConfirm(startBtn) {
     const el = findInput();
-    if (el) clearInput(el);
+    if (el) {
+      const before = readText(el);
+      clearInput(el);
+      const after = readText(el);
+      post({
+        event: 'debug',
+        message: `start: clearInput before(len=${before.length})=${previewText(before)}, after(len=${after.length})=${previewText(after)}`,
+      });
+    } else {
+      post({ event: 'debug', message: 'start: clearInput skipped (input not found)' });
+    }
     const clickedAt = Date.now();
     post({ event: 'debug', message: `start: clicking ${JSON.stringify(buttonLabel(startBtn))}` });
     startBtn.click();
@@ -194,13 +230,22 @@
     if (btn) btn.click();
 
     const stoppedAt = Date.now();
+    lastStopAt = stoppedAt;
+    const waitWs = activeWsOpen && activeWsId > 0;
+    const targetWsId = activeWsId;
+    let wsDone = false;
+    let wsDoneReason = '';
     let lastText = '';
+
     const finish = (reason) => {
       active = false;
       cleanup();
       const input = findInput();
       const finalText = readText(input);
-      post({ event: 'debug', message: `stop +${Date.now() - stoppedAt}ms: finished (${reason}), len=${finalText.length}, preview=${JSON.stringify(finalText.slice(0, 80))}` });
+      post({
+        event: 'debug',
+        message: `stop +${Date.now() - stoppedAt}ms: finished (${reason}), len=${finalText.length}, preview=${previewText(finalText)}`,
+      });
       post({ event: 'stopped', text: finalText });
     };
 
@@ -214,15 +259,36 @@
       const text = readText(findInput());
       if (text && text !== lastText) {
         lastText = text;
-        post({ event: 'debug', message: `stop +${Date.now() - stoppedAt}ms: text len=${text.length}` });
-        // claude.ai inserts the transcript in chunks (~50-110 ms apart); wait 300 ms of quiet.
-        schedule(300, 'settled');
+        if (wsDone) {
+          // React just flushed a final frame after TranscriptEndpoint/close — give 80 ms for any adjacent update.
+          schedule(80, wsDoneReason);
+        } else if (!waitWs) {
+          // Fallback if ws-hook did not see an open socket.
+          schedule(800, 'settled-fallback');
+        }
       }
     };
 
     cleanup();
     observer = new MutationObserver(onChange);
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    if (waitWs) {
+      onStopWsEvent = (d) => {
+        if (d.id !== targetWsId) return;
+        if (d.kind === 'msg' && d.msgType === 'TranscriptEndpoint') {
+          wsDone = true;
+          wsDoneReason = 'ws-endpoint';
+          // Small 80 ms grace for React to commit the last TranscriptText into ProseMirror.
+          schedule(80, wsDoneReason);
+        } else if (d.kind === 'close' || d.kind === 'error') {
+          wsDone = true;
+          wsDoneReason = `ws-${d.kind}`;
+          schedule(80, wsDoneReason);
+        }
+      };
+    }
+
     schedule(8000, 'timeout-8s');
     onChange();
   }
