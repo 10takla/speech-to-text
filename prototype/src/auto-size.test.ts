@@ -68,3 +68,19 @@ it('resizeNow waits for the newest size and skips unchanged dimensions', async (
   await sizer.resizeNow();
   expect(native.invoke).toHaveBeenCalledTimes(2);
 });
+
+it('forces a resize when requested and recovers if the viewport stays smaller after resize', async () => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 400 });
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 100 });
+  const sizer = setup(); await sizer.resizeNow();
+  expect(native.invoke).toHaveBeenCalledTimes(1);
+
+  await sizer.resizeNow(true);
+  expect(native.invoke).toHaveBeenCalledTimes(2);
+
+  Object.defineProperty(window, 'innerHeight', { configurable: true, value: 30 });
+  window.dispatchEvent(new Event('resize'));
+  await vi.advanceTimersByTimeAsync(16);
+  expect(native.invoke).toHaveBeenCalledTimes(3);
+  expect(native.invoke.mock.lastCall?.[1]?.height).toBe(100);
+});

@@ -3,7 +3,7 @@ import { invokeCommand } from './tauri-commands';
 import { isAndroid } from './android-runtime';
 
 export interface WindowAutoSizer {
-  resizeNow(): Promise<void>;
+  resizeNow(force?: boolean): Promise<void>;
 }
 
 export function enableWindowAutoSizing(
@@ -22,12 +22,21 @@ export function enableWindowAutoSizing(
   if (!target) return null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastW = 0, lastH = 0;
-  let running = false, pending = false;
+  let running = false, pending = false, forceNext = false;
+  let viewportSyncPending = false;
   const settleWaiters: Array<() => void> = [];
 
   async function waitForSettled() {
     if (!running && !pending) return;
     await new Promise<void>(resolve => settleWaiters.push(resolve));
+  }
+
+  function measure() {
+    const rect = target!.getBoundingClientRect();
+    return {
+      width: Math.ceil(rect.width + (options.extraWidth || 0)),
+      height: Math.ceil(rect.height + (options.extraHeight || 0)),
+    };
   }
 
   async function adjust() {
@@ -40,11 +49,11 @@ export function enableWindowAutoSizing(
     try {
       do {
         pending = false;
+        const forced = forceNext;
+        forceNext = false;
         try {
-          const rect = target!.getBoundingClientRect();
-          const width = Math.ceil(rect.width + (options.extraWidth || 0));
-          const height = Math.ceil(rect.height + (options.extraHeight || 0));
-          if (!width || !height || (Math.abs(width - lastW) < 2 && Math.abs(height - lastH) < 2)) continue;
+          const { width, height } = measure();
+          if (!width || !height || (!forced && Math.abs(width - lastW) < 2 && Math.abs(height - lastH) < 2)) continue;
           if (options.nativeResizeCommand) {
             const { invoke } = await import('@tauri-apps/api/core');
             await invokeCommand(invoke, options.nativeResizeCommand, {
@@ -60,6 +69,7 @@ export function enableWindowAutoSizing(
           }
           // Запоминаем размер только после успешного изменения нативного окна.
           lastW = width; lastH = height;
+          viewportSyncPending = true;
         } catch (error) {
           if ('__TAURI_INTERNALS__' in window) console.warn('Не удалось подстроить размер окна:', error);
         }
@@ -82,10 +92,28 @@ export function enableWindowAutoSizing(
   observer.observe(target);
   window.addEventListener('DOMContentLoaded', schedule);
   window.addEventListener('load', schedule);
+  // If the native viewport finishes resizing smaller than the measured content
+  // (e.g. a stale SetWindowPos landed or a resize while hidden did not stick),
+  // schedule one forced re-sync as long as the content fits on screen.
+  window.addEventListener('resize', () => {
+    if (!viewportSyncPending) return;
+    viewportSyncPending = false;
+    const { width, height } = measure();
+    if (!width || !height) return;
+    const availW = window.screen?.availWidth || Infinity;
+    const availH = window.screen?.availHeight || Infinity;
+    const clippedW = window.innerWidth > 0 && window.innerWidth < Math.min(width, availW) - 1;
+    const clippedH = window.innerHeight > 0 && window.innerHeight < Math.min(height, availH) - 1;
+    if (clippedW || clippedH) {
+      forceNext = true;
+      schedule();
+    }
+  });
   schedule();
 
   return {
-    async resizeNow() {
+    async resizeNow(force = false) {
+      if (force) forceNext = true;
       if (timer) {
         clearTimeout(timer);
         timer = null;

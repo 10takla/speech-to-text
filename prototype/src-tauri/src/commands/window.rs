@@ -135,16 +135,18 @@ pub fn resize_overlay_to_content(app: AppHandle, width: f64, height: f64, keep_c
         let area = monitor.work_area();
         (width.min(area.size.width as f64 / scale), height.min(area.size.height as f64 / scale))
     } else { (width, height) };
+    // set_size uses SWP_ASYNCWINDOWPOS on Windows, so outer_size() right after
+    // it can still report the previous size; compute centering from the target.
+    let target_size = tauri::LogicalSize::new(width, height).to_physical::<u32>(scale);
     window.set_size(tauri::LogicalSize::new(width, height)).map_err(|e| e.to_string())?;
     if let Some(monitor) = monitor {
         let area = monitor.work_area();
         let position = window.outer_position().map_err(|e| e.to_string())?;
-        let size = window.outer_size().map_err(|e| e.to_string())?;
         let target_x = anchor_center_x
-            .map(|center| (center - size.width as i64 / 2) as i32)
+            .map(|center| (center - target_size.width as i64 / 2) as i32)
             .unwrap_or(position.x);
-        let max_x = (area.position.x + area.size.width as i32 - size.width as i32).max(area.position.x);
-        let max_y = (area.position.y + area.size.height as i32 - size.height as i32).max(area.position.y);
+        let max_x = (area.position.x + area.size.width as i32 - target_size.width as i32).max(area.position.x);
+        let max_y = (area.position.y + area.size.height as i32 - target_size.height as i32).max(area.position.y);
         let x = target_x.clamp(area.position.x, max_x);
         let next = PhysicalPosition::new(x, position.y.clamp(area.position.y, max_y));
         if next != position { window.set_position(next).map_err(|e| e.to_string())?; }

@@ -734,6 +734,7 @@ export function createRecordingSession(host: SessionHost) {
       await overlayWindowController?.moveToCursorMonitor();
     }
     await overlayWindowController?.updateMaxWidth();
+    await overlayAutoSizer?.resizeNow(true);
     if (generation !== recordingGeneration) return;
 
     try {

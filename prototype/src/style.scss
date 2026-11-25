@@ -100,7 +100,7 @@ body {
 }
 
 .overlay-title, .overlay-step-title { cursor: text; }
-.overlay-state-icon { cursor: grab; }
+.overlay-state-icon { cursor: inherit; }
 
 .segment-painting, .segment-painting * {
   user-select: none !important;
@@ -215,10 +215,10 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  cursor: auto;
+  cursor: grab;
 
   &:active {
-    cursor: auto;
+    cursor: grabbing;
   }
 }
 
@@ -332,7 +332,7 @@ body {
   overflow-wrap: anywhere;
 }
 
-.overlay-step-error { font-size: 0.75rem; color: #f87171; }
+.overlay-step-error { font-size: 0.75rem; color: #f87171; cursor: text; }
 .overlay-step-waiting { font-size: 0.75rem; color: var(--text-muted); }
 
 .overlay-state-icon {
@@ -811,6 +811,7 @@ body {
 .overlay-step-controls {
   min-width: 0;
   margin-inline-start: calc(1em + 6px);
+  cursor: default;
   &:empty { display: none; }
 }
 

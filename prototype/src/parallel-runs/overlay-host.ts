@@ -250,6 +250,10 @@ export function initializeOverlayHost() {
     });
     await events.listen('pause-hotkey', () => { void microphoneOwner?.session.pause(); });
     await events.listen('cancel-hotkey', () => { void cancel(); });
+    await events.listen('show-overlay-content', () => {
+      if (!runs.length && !windowController?.previewActive) return;
+      requestAnimationFrame(() => { void autoSizer?.resizeNow(true); });
+    });
     await events.listen<number | null>('overlay-width-preview', event => { void windowController?.previewWidth(event.payload); });
     await events.listen<boolean>('overlay-monitor-movement-setting', event => {
       config.overlayFollowCursorMonitor = event.payload;
